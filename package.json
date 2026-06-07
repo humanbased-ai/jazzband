@@ -1,0 +1,45 @@
+{
+  "name": "@humanbased-ai/jazzband",
+  "version": "0.1.0",
+  "description": "Open TypeScript orchestration layer for ticket-driven agent workflows.",
+  "type": "module",
+  "license": "MIT",
+  "private": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/humanbased-ai/jazzband.git"
+  },
+  "bugs": {
+    "url": "https://github.com/humanbased-ai/jazzband/issues"
+  },
+  "homepage": "https://github.com/humanbased-ai/jazzband#readme",
+  "bin": {
+    "jazzband": "dist/cli/main.js",
+    "jzb": "dist/cli/main.js"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "tsc -p tsconfig.json",
+    "start": "node dist/cli/main.js",
+    "dev": "node --import tsx src/cli/main.ts",
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  }
+}
