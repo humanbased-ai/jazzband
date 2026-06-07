@@ -40,12 +40,26 @@ jobs:
       - name: Stamp release version
         env:
           RELEASE_VERSION: ${{ inputs.exact_version }}
-        run: npm version "$RELEASE_VERSION" --no-git-tag-version
+        run: |
+          if ! printf '%s' "$RELEASE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "exact_version must be a stable semver version like 0.1.0" >&2
+            exit 1
+          fi
+          CURRENT=$(node -p "require('./package.json').version")
+          if [ "$CURRENT" != "$RELEASE_VERSION" ]; then
+            npm version "$RELEASE_VERSION" --no-git-tag-version
+          fi
 
       - name: Publish to npm
         env:
+          RELEASE_VERSION: ${{ inputs.exact_version }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public --provenance
+        run: |
+          if npm view "@humanbased-ai/jazzband@${RELEASE_VERSION}" version 2>/dev/null | grep -qF "${RELEASE_VERSION}"; then
+            echo "Version ${RELEASE_VERSION} already on npm - skipping publish."
+            exit 0
+          fi
+          npm publish --access public --provenance
 
       - name: Push release tag
         env:
