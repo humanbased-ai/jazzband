@@ -32,8 +32,10 @@ Architecture overview: [`docs/architecture.md`](docs/architecture.md).
       `category ∈ allowedCategories`, `category ∉ blockedCategories`.
     - `--execute` performs side effects: `Backlog → Todo`, assign the agent identity, comment the
       proposed approach + reclaim note. Non-eligible → "needs human triage" comment, left in Backlog.
-    - **5h stale-claim takeover:** active issues assigned to a human with `now − createdAt > 5h` AND no
+    - **5h stale-claim takeover:** active issues assigned to a human with `now − updatedAt > 5h` AND no
       linked PR AND no active run are commented, reassigned to the agent, and ensured `Todo`.
+      (`updatedAt` = last state-change or assignment timestamp; a fresh human claim resets it and is
+      never displaced before the window expires.)
     - Idempotent across ticks (no double-promote; keyed on issue id + linked-PR presence).
   - **Technical Notes:** new `src/core/triager.ts`, `src/adapters/{TrackerPort,ClassifierPort}.ts`,
     CLI case in `src/cli/main.ts`. Runs in front of the *running* Symphony loop — no execution code yet.

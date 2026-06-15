@@ -79,7 +79,9 @@ A **dry-run shadow period** (log decisions, take no action) precedes enabling `-
 ### 3.4 Stale-claim takeover
 
 Separately, scan active issues (Todo / In Progress) assigned to a human where
-`now − createdAt > staleClaimHours (=5)` **AND** there is no linked PR **AND** no active agent run.
+`now − updatedAt > staleClaimHours (=5)` **AND** there is no linked PR **AND** no active agent run.
+`updatedAt` is the issue's last state-change or assignment timestamp, not the creation time — a human
+claim made seconds ago has a fresh `updatedAt` and is never displaced before the window expires.
 On match: comment, reassign to the agent identity, ensure `Todo`. The "no linked PR + no active run"
 guard guarantees we never steal a fix that is already in flight.
 
@@ -141,7 +143,7 @@ New `src/core/types.ts` additions and `src/adapters/*` ports. Marked proposed; n
 // ---- Triage ----
 export interface TriageCandidate {
   id: string; identifier: string; title: string; description: string;
-  state: string; assigneeId: string | null; createdAt: string; url: string; labels: string[];
+  state: string; assigneeId: string | null; createdAt: string; updatedAt: string; url: string; labels: string[];
 }
 export type TriageClass = "code_fixable" | "operational" | "needs_human";
 export interface TriageAssessment {
@@ -191,6 +193,8 @@ export interface TrackerPort {
   listBacklog(filter: { titlePattern?: RegExp; label?: string }): Promise<TriageCandidate[]>;
   listActive(): Promise<TriageCandidate[]>;
   linkedPrUrl(issueId: string): Promise<string | null>;
+  /** Returns the runId of any agent run currently working this issue, or null if none. */
+  activeRunId(issueId: string): Promise<string | null>;
   promote(issueId: string, toState: string, assigneeId: string): Promise<void>;
   assign(issueId: string, assigneeId: string): Promise<void>;
   comment(issueId: string, body: string): Promise<void>;
