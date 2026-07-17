@@ -37,6 +37,8 @@ export interface Issue {
   state: string;
   branchName: string | null;
   url: string | null;
+  /** PR number parsed from a Linear attachment URL (`/pull/<n>`), if present. */
+  prNumber: number | null;
   labels: string[];
   blockedBy: BlockerRef[];
   createdAt: string | null;
