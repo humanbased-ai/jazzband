@@ -1,4 +1,5 @@
 import { renderPrompt } from "../core/prompt.js";
+import { populateWorkspace } from "../core/repo.js";
 import { prepareWorkspace } from "../core/workspace.js";
 import type { Issue, ServiceConfig } from "../core/types.js";
 import { runAttempt, type AppServerClient, type AttemptOutcome } from "../agent/runner.js";
@@ -28,6 +29,15 @@ export function makeAgentDispatcher(deps: DispatcherDeps): Dispatcher {
       afterCreate: deps.config.hooks.afterCreate,
       hookTimeoutMs: deps.config.hooks.timeoutMs,
     });
+
+    // Check out the repo so the coding agent has code to work on (SPEC §9.3).
+    if (deps.config.workspace.repo) {
+      await populateWorkspace({
+        path: workspace.path,
+        repo: deps.config.workspace.repo,
+        base: deps.config.workspace.base,
+      });
+    }
 
     const prompt = renderPrompt(deps.promptTemplate, { issue });
 

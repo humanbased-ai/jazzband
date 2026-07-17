@@ -200,7 +200,11 @@ export function resolveConfig(rawConfig: RawConfig, options: ResolveConfigOption
   return {
     tracker: resolveTracker(trackerRaw, env),
     polling,
-    workspace: { root: expandWorkspaceRoot(workspaceRaw.root, env, options.workflowDir, tempDir) },
+    workspace: {
+      root: expandWorkspaceRoot(workspaceRaw.root, env, options.workflowDir, tempDir),
+      repo: resolveSecret(workspaceRaw.repo, env, "workspace.repo"),
+      base: optString(workspaceRaw.base, "workspace.base") ?? "main",
+    },
     hooks,
     agent: resolveAgent(agentRaw),
     codex: resolveCodex(codexRaw),

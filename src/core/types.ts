@@ -73,6 +73,10 @@ export interface PollingConfig {
 
 export interface WorkspaceRootConfig {
   root: string;
+  /** Git repo (URL or local path, $VAR ok) to check out into each workspace; null = leave empty. */
+  repo: string | null;
+  /** Branch to work from. */
+  base: string;
 }
 
 export interface HooksConfig {
