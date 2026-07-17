@@ -156,7 +156,13 @@ function resolveCodex(raw: RawConfig): CodexConfig {
 }
 
 function resolveClassifier(raw: RawConfig, env: Env): ServiceConfig["classifier"] {
+  const runner = optString(raw.runner, "classifier.runner") ?? "api";
+  if (runner !== "api" && runner !== "claude-cli") {
+    fail(`classifier.runner must be "api" or "claude-cli"`);
+  }
   return {
+    runner,
+    command: optString(raw.command, "classifier.command") ?? "claude",
     model: optString(raw.model, "classifier.model") ?? "claude-opus-4-8",
     apiKey: resolveSecret(raw.api_key, env, "classifier.api_key"),
     authToken: resolveSecret(raw.auth_token, env, "classifier.auth_token"),

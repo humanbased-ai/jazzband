@@ -16,7 +16,7 @@ export type SpawnAgent = (
   options: { cwd: string; timeoutMs: number },
 ) => Promise<SpawnResult>;
 
-const defaultSpawn: SpawnAgent = (command, args, { cwd, timeoutMs }) =>
+export const spawnClaude: SpawnAgent = (command, args, { cwd, timeoutMs }) =>
   new Promise((resolvePromise) => {
     const child = spawn(command, args, { cwd, stdio: ["ignore", "pipe", "ignore"] });
     let stdout = "";
@@ -72,7 +72,7 @@ export class ClaudeAgentClient implements AppServerClient {
     this.model = options.model ?? "claude-opus-4-8";
     this.permissionMode = options.permissionMode ?? "acceptEdits";
     this.turnTimeoutMs = options.turnTimeoutMs ?? 3600000;
-    this.spawnAgent = options.spawnAgent ?? defaultSpawn;
+    this.spawnAgent = options.spawnAgent ?? spawnClaude;
   }
 
   async start(options: { cwd: string; issue: Issue }): Promise<StartResult> {

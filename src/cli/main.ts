@@ -13,6 +13,7 @@ import { runLoop } from "../runtime/loop.js";
 import { makeAgentDispatcher } from "../runtime/dispatcher.js";
 import { Runtime, run as runDelivery } from "../runtime/runtime.js";
 import { AnthropicClassifier } from "../triage/anthropicClassifier.js";
+import { ClaudeCliClassifier } from "../triage/claudeCliClassifier.js";
 import { planTriage } from "../triage/engine.js";
 import { applyTriage } from "../triage/executor.js";
 
@@ -136,11 +137,14 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       const workflow = loadWorkflow(workflowPath);
       const config = resolveConfig(workflow.config, { workflowDir: dirname(workflowPath) });
       const issues = await new LinearClient(config.tracker).fetchCandidateIssues();
-      const classifier = new AnthropicClassifier({
-        model: config.classifier.model,
-        apiKey: config.classifier.apiKey,
-        authToken: config.classifier.authToken,
-      });
+      const classifier =
+        config.classifier.runner === "claude-cli"
+          ? new ClaudeCliClassifier({ command: config.classifier.command, model: config.classifier.model })
+          : new AnthropicClassifier({
+              model: config.classifier.model,
+              apiKey: config.classifier.apiKey,
+              authToken: config.classifier.authToken,
+            });
       const plan = await planTriage(issues, classifier);
 
       for (const decision of plan.decisions) {

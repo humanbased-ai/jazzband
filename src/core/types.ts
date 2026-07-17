@@ -103,6 +103,10 @@ export interface CodexConfig {
 
 /** Triage classifier config (extension section) — model + how to authenticate to Anthropic. */
 export interface ClassifierConfig {
+  /** "api" = Anthropic SDK; "claude-cli" = shell out to the logged-in `claude` CLI. */
+  runner: "api" | "claude-cli";
+  /** CLI command when runner="claude-cli". */
+  command: string;
   model: string;
   /** Explicit API key (or $VAR); null falls back to ambient credentials. */
   apiKey: string | null;
