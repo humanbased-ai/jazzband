@@ -1,16 +1,22 @@
 #!/usr/bin/env node
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveConfig, validateDispatchPreflight } from "../core/config.js";
+import { JazzbandError } from "../core/errors.js";
 import { createWorkflowPlan } from "../core/planner.js";
+import { loadWorkflow } from "../core/workflow.js";
 
 const USAGE = `Jazzband — TypeScript orchestration for ticket-driven agent workflows
 
 Usage:
+  jazzband check [--workflow <path>]
   jazzband plan --ticket <KEY> --repo <owner/repo>
   jazzband run --ticket <KEY> --repo <owner/repo> [--execute]
   jazzband status --pr <url|owner/repo#N>
   jazzband --help
 
 Commands:
+  check    Load a WORKFLOW.md, resolve config, and run dispatch preflight. No side effects.
   plan     Print the intended workflow plan. No side effects.
   run      Start from the same plan shape. Side effects require --execute.
   status   Inspect the public PR orchestration state. Placeholder in this seed.
@@ -52,6 +58,38 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (command === "help" || command === "--help" || command === "-h") {
     console.log(USAGE);
     return 0;
+  }
+
+  if (command === "check") {
+    const workflowPath = resolve(stringFlag(flags, "workflow") ?? "WORKFLOW.md");
+    try {
+      const workflow = loadWorkflow(workflowPath);
+      const config = resolveConfig(workflow.config, { workflowDir: dirname(workflowPath) });
+      validateDispatchPreflight(config);
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            workflow: workflowPath,
+            tracker: {
+              kind: config.tracker.kind,
+              projectSlug: config.tracker.projectSlug,
+              endpoint: config.tracker.endpoint,
+            },
+            pollIntervalMs: config.polling.intervalMs,
+            workspaceRoot: config.workspace.root,
+            maxConcurrentAgents: config.agent.maxConcurrentAgents,
+          },
+          null,
+          2,
+        ),
+      );
+      return 0;
+    } catch (error) {
+      const code = error instanceof JazzbandError ? error.code : "error";
+      console.error(JSON.stringify({ ok: false, code, message: (error as Error).message }, null, 2));
+      return 1;
+    }
   }
 
   if (command === "plan" || command === "run") {
