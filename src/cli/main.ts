@@ -6,13 +6,18 @@ import { JazzbandError } from "../core/errors.js";
 import { createWorkflowPlan } from "../core/planner.js";
 import { loadWorkflow } from "../core/workflow.js";
 import { LinearClient } from "../linear/client.js";
+import { LinearWriteClient } from "../linear/writes.js";
 import { runLoop } from "../runtime/loop.js";
+import { AnthropicClassifier } from "../triage/anthropicClassifier.js";
+import { planTriage } from "../triage/engine.js";
+import { applyTriage } from "../triage/executor.js";
 
 const USAGE = `Jazzband — TypeScript orchestration for ticket-driven agent workflows
 
 Usage:
   jazzband check [--workflow <path>]
   jazzband poll [--workflow <path>] [--once]
+  jazzband triage [--workflow <path>] [--execute]
   jazzband plan --ticket <KEY> --repo <owner/repo>
   jazzband run --ticket <KEY> --repo <owner/repo> [--execute]
   jazzband status --pr <url|owner/repo#N>
@@ -21,6 +26,7 @@ Usage:
 Commands:
   check    Load a WORKFLOW.md, resolve config, and run dispatch preflight. No side effects.
   poll     Poll the tracker and print the dispatch decision. --once runs one tick and exits.
+  triage   Poll, classify + dedup + label bug reports; --execute writes to Linear (else dry-run).
   plan     Print the intended workflow plan. No side effects.
   run      Start from the same plan shape. Side effects require --execute.
   status   Inspect the public PR orchestration state. Placeholder in this seed.
@@ -111,6 +117,35 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         },
         { once: Boolean(flags.once) },
       );
+      return 0;
+    } catch (error) {
+      const code = error instanceof JazzbandError ? error.code : "error";
+      console.error(JSON.stringify({ ok: false, code, message: (error as Error).message }, null, 2));
+      return 1;
+    }
+  }
+
+  if (command === "triage") {
+    const workflowPath = resolve(stringFlag(flags, "workflow") ?? "WORKFLOW.md");
+    try {
+      const workflow = loadWorkflow(workflowPath);
+      const config = resolveConfig(workflow.config, { workflowDir: dirname(workflowPath) });
+      const issues = await new LinearClient(config.tracker).fetchCandidateIssues();
+      const plan = await planTriage(issues, new AnthropicClassifier());
+
+      for (const decision of plan.decisions) {
+        const dup = decision.duplicateOf ? ` → dup of ${decision.duplicateOf}` : "";
+        const promote = decision.promote ? " [PROMOTE]" : "";
+        console.log(`${decision.issue.identifier} ${decision.verdict}${dup}${promote} :: ${decision.labels.join(", ")}`);
+      }
+
+      if (flags.execute) {
+        const writer = new LinearWriteClient(config.tracker);
+        const result = await applyTriage(plan, writer);
+        console.log(`applied: labeled ${result.labeled}, promoted ${result.promoted}`);
+      } else {
+        console.log(`\nDry run — ${plan.decisions.length} classified, ${plan.decisions.filter((d) => d.promote).length} would promote. Re-run with --execute to apply.`);
+      }
       return 0;
     } catch (error) {
       const code = error instanceof JazzbandError ? error.code : "error";
