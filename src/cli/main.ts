@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveConfig, validateDispatchPreflight } from "../core/config.js";
@@ -240,7 +241,18 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   return 2;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+function invokedAsScript(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  // Resolve symlinks so an installed bin (e.g. /opt/homebrew/bin/jzb → dist/cli/main.js) matches.
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsScript()) {
   main().then(
     (code) => process.exit(code),
     (error) => {
