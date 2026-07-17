@@ -5,11 +5,14 @@ import { resolveConfig, validateDispatchPreflight } from "../core/config.js";
 import { JazzbandError } from "../core/errors.js";
 import { createWorkflowPlan } from "../core/planner.js";
 import { loadWorkflow } from "../core/workflow.js";
+import { LinearClient } from "../linear/client.js";
+import { runLoop } from "../runtime/loop.js";
 
 const USAGE = `Jazzband — TypeScript orchestration for ticket-driven agent workflows
 
 Usage:
   jazzband check [--workflow <path>]
+  jazzband poll [--workflow <path>] [--once]
   jazzband plan --ticket <KEY> --repo <owner/repo>
   jazzband run --ticket <KEY> --repo <owner/repo> [--execute]
   jazzband status --pr <url|owner/repo#N>
@@ -17,6 +20,7 @@ Usage:
 
 Commands:
   check    Load a WORKFLOW.md, resolve config, and run dispatch preflight. No side effects.
+  poll     Poll the tracker and print the dispatch decision. --once runs one tick and exits.
   plan     Print the intended workflow plan. No side effects.
   run      Start from the same plan shape. Side effects require --execute.
   status   Inspect the public PR orchestration state. Placeholder in this seed.
@@ -83,6 +87,29 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
           null,
           2,
         ),
+      );
+      return 0;
+    } catch (error) {
+      const code = error instanceof JazzbandError ? error.code : "error";
+      console.error(JSON.stringify({ ok: false, code, message: (error as Error).message }, null, 2));
+      return 1;
+    }
+  }
+
+  if (command === "poll") {
+    const workflowPath = resolve(stringFlag(flags, "workflow") ?? "WORKFLOW.md");
+    try {
+      const workflow = loadWorkflow(workflowPath);
+      const config = resolveConfig(workflow.config, { workflowDir: dirname(workflowPath) });
+      const client = new LinearClient(config.tracker);
+      await runLoop(
+        {
+          config,
+          source: client,
+          dispatch: (issue) => console.log(`dispatch ${issue.identifier} (${issue.state})`),
+          log: (message) => console.error(message),
+        },
+        { once: Boolean(flags.once) },
       );
       return 0;
     } catch (error) {
