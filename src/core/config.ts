@@ -41,6 +41,15 @@ function resolveVar(value: string, env: Env): string | undefined {
   return env[match[1]!];
 }
 
+/** Resolve an optional secret value: literal or `$VAR`; empty/missing → null. */
+function resolveSecret(value: unknown, env: Env, field: string): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") fail(`${field} must be a string`);
+  if (value === "") return null;
+  const resolved = resolveVar(value, env);
+  return resolved && resolved !== "" ? resolved : null;
+}
+
 function coerceInt(value: unknown, field: string, positive = false): number {
   let n: number;
   if (typeof value === "number") {
@@ -96,14 +105,7 @@ function expandWorkspaceRoot(raw: unknown, env: Env, workflowDir: string, tempDi
 }
 
 function resolveTracker(raw: RawConfig, env: Env): TrackerConfig {
-  let apiKey: string | null = null;
-  const apiKeyRaw = raw.api_key;
-  if (typeof apiKeyRaw === "string" && apiKeyRaw !== "") {
-    const resolved = resolveVar(apiKeyRaw, env);
-    apiKey = resolved && resolved !== "" ? resolved : null;
-  } else if (apiKeyRaw !== undefined && apiKeyRaw !== null) {
-    fail("tracker.api_key must be a string");
-  }
+  const apiKey = resolveSecret(raw.api_key, env, "tracker.api_key");
 
   return {
     kind: optString(raw.kind, "tracker.kind") ?? "",
@@ -153,6 +155,14 @@ function resolveCodex(raw: RawConfig): CodexConfig {
   };
 }
 
+function resolveClassifier(raw: RawConfig, env: Env): ServiceConfig["classifier"] {
+  return {
+    model: optString(raw.model, "classifier.model") ?? "claude-opus-4-8",
+    apiKey: resolveSecret(raw.api_key, env, "classifier.api_key"),
+    authToken: resolveSecret(raw.auth_token, env, "classifier.auth_token"),
+  };
+}
+
 /**
  * Resolve a raw front-matter config map into the typed ServiceConfig (SPEC §6.1):
  * apply defaults, resolve `$VAR` indirection only where present, then coerce and validate.
@@ -167,6 +177,7 @@ export function resolveConfig(rawConfig: RawConfig, options: ResolveConfigOption
   const hooksRaw = asObject(rawConfig.hooks, "hooks");
   const agentRaw = asObject(rawConfig.agent, "agent");
   const codexRaw = asObject(rawConfig.codex, "codex");
+  const classifierRaw = asObject(rawConfig.classifier, "classifier");
 
   const polling: PollingConfig = {
     intervalMs: optInt(pollingRaw.interval_ms, "polling.interval_ms", 30000),
@@ -187,6 +198,7 @@ export function resolveConfig(rawConfig: RawConfig, options: ResolveConfigOption
     hooks,
     agent: resolveAgent(agentRaw),
     codex: resolveCodex(codexRaw),
+    classifier: resolveClassifier(classifierRaw, env),
   };
 }
 

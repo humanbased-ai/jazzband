@@ -38,15 +38,29 @@ interface MessageResponse {
 /** Seam over the Anthropic Messages API so the classifier is testable without a network call. */
 export type RunMessage = (params: Record<string, unknown>) => Promise<MessageResponse>;
 
-const defaultRunMessage: RunMessage = async (params) => {
-  const { default: Anthropic } = await import("@anthropic-ai/sdk");
-  const client = new Anthropic();
-  return client.messages.create(params as never) as unknown as Promise<MessageResponse>;
-};
-
 export interface AnthropicClassifierOptions {
   model?: string;
+  /** Explicit API key; omit to use ambient credentials (env or `ant auth login` profile). */
+  apiKey?: string | null;
+  /** Explicit OAuth/bearer token for subscription auth; omit to use ambient credentials. */
+  authToken?: string | null;
   runMessage?: RunMessage;
+}
+
+/**
+ * Build the default runMessage over @anthropic-ai/sdk. Passing neither apiKey nor authToken
+ * lets `new Anthropic()` resolve credentials in order: ANTHROPIC_API_KEY → ANTHROPIC_AUTH_TOKEN →
+ * the `ant auth login` OAuth profile — so subscription auth works with no key configured.
+ */
+function makeDefaultRunMessage(options: AnthropicClassifierOptions): RunMessage {
+  return async (params) => {
+    const { default: Anthropic } = await import("@anthropic-ai/sdk");
+    const clientOptions: { apiKey?: string; authToken?: string } = {};
+    if (options.apiKey) clientOptions.apiKey = options.apiKey;
+    if (options.authToken) clientOptions.authToken = options.authToken;
+    const client = new Anthropic(clientOptions);
+    return client.messages.create(params as never) as unknown as Promise<MessageResponse>;
+  };
 }
 
 /** LLM-backed Classifier: one forced structured tool call per issue (SPEC-independent triage). */
@@ -56,7 +70,7 @@ export class AnthropicClassifier implements Classifier {
 
   constructor(options: AnthropicClassifierOptions = {}) {
     this.model = options.model ?? DEFAULT_MODEL;
-    this.runMessage = options.runMessage ?? defaultRunMessage;
+    this.runMessage = options.runMessage ?? makeDefaultRunMessage(options);
   }
 
   async classify(issue: Issue): Promise<Classification> {

@@ -131,7 +131,12 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       const workflow = loadWorkflow(workflowPath);
       const config = resolveConfig(workflow.config, { workflowDir: dirname(workflowPath) });
       const issues = await new LinearClient(config.tracker).fetchCandidateIssues();
-      const plan = await planTriage(issues, new AnthropicClassifier());
+      const classifier = new AnthropicClassifier({
+        model: config.classifier.model,
+        apiKey: config.classifier.apiKey,
+        authToken: config.classifier.authToken,
+      });
+      const plan = await planTriage(issues, classifier);
 
       for (const decision of plan.decisions) {
         const dup = decision.duplicateOf ? ` → dup of ${decision.duplicateOf}` : "";
