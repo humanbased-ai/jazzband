@@ -80,6 +80,21 @@ test("normalizes per-state concurrency keys and rejects non-positive limits", ()
   );
 });
 
+test("classifier config defaults to opus and resolves an auth token from $VAR", () => {
+  const dflt = resolveConfig({}, OPTS);
+  assert.equal(dflt.classifier.model, "claude-opus-4-8");
+  assert.equal(dflt.classifier.apiKey, null);
+  assert.equal(dflt.classifier.authToken, null);
+
+  const configured = resolveConfig(
+    { classifier: { model: "claude-haiku-4-5", auth_token: "$CLAUDE_TOKEN" } },
+    { ...OPTS, env: { CLAUDE_TOKEN: "oauth_abc" } },
+  );
+  assert.equal(configured.classifier.model, "claude-haiku-4-5");
+  assert.equal(configured.classifier.authToken, "oauth_abc");
+  assert.equal(configured.classifier.apiKey, null);
+});
+
 test("preflight passes a complete linear config and flags a missing project_slug", () => {
   const complete = resolveConfig(
     { tracker: { kind: "linear", api_key: "lin_api_1", project_slug: "bugs" } },

@@ -101,6 +101,15 @@ export interface CodexConfig {
   stallTimeoutMs: number;
 }
 
+/** Triage classifier config (extension section) — model + how to authenticate to Anthropic. */
+export interface ClassifierConfig {
+  model: string;
+  /** Explicit API key (or $VAR); null falls back to ambient credentials. */
+  apiKey: string | null;
+  /** Explicit OAuth/bearer token (or $VAR) for subscription auth; null falls back to ambient. */
+  authToken: string | null;
+}
+
 /** Typed runtime view derived from WorkflowDefinition.config plus environment resolution. */
 export interface ServiceConfig {
   tracker: TrackerConfig;
@@ -109,4 +118,5 @@ export interface ServiceConfig {
   hooks: HooksConfig;
   agent: AgentConfig;
   codex: CodexConfig;
+  classifier: ClassifierConfig;
 }
