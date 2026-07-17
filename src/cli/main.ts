@@ -5,9 +5,13 @@ import { resolveConfig, validateDispatchPreflight } from "../core/config.js";
 import { JazzbandError } from "../core/errors.js";
 import { createWorkflowPlan } from "../core/planner.js";
 import { loadWorkflow } from "../core/workflow.js";
+import type { Issue } from "../core/types.js";
 import { LinearClient } from "../linear/client.js";
 import { LinearWriteClient } from "../linear/writes.js";
+import { ClaudeAgentClient } from "../agent/claudeClient.js";
 import { runLoop } from "../runtime/loop.js";
+import { makeAgentDispatcher } from "../runtime/dispatcher.js";
+import { Runtime, run as runDelivery } from "../runtime/runtime.js";
 import { AnthropicClassifier } from "../triage/anthropicClassifier.js";
 import { planTriage } from "../triage/engine.js";
 import { applyTriage } from "../triage/executor.js";
@@ -18,8 +22,8 @@ Usage:
   jazzband check [--workflow <path>]
   jazzband poll [--workflow <path>] [--once]
   jazzband triage [--workflow <path>] [--execute]
+  jazzband run [--workflow <path>] [--once] [--execute]
   jazzband plan --ticket <KEY> --repo <owner/repo>
-  jazzband run --ticket <KEY> --repo <owner/repo> [--execute]
   jazzband status --pr <url|owner/repo#N>
   jazzband --help
 
@@ -27,6 +31,7 @@ Commands:
   check    Load a WORKFLOW.md, resolve config, and run dispatch preflight. No side effects.
   poll     Poll the tracker and print the dispatch decision. --once runs one tick and exits.
   triage   Poll, classify + dedup + label bug reports; --execute writes to Linear (else dry-run).
+  run      Poll + work triage:fixable issues with a Claude coding agent; --execute launches agents.
   plan     Print the intended workflow plan. No side effects.
   run      Start from the same plan shape. Side effects require --execute.
   status   Inspect the public PR orchestration state. Placeholder in this seed.
@@ -159,7 +164,47 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     }
   }
 
-  if (command === "plan" || command === "run") {
+  if (command === "run") {
+    const workflowPath = resolve(stringFlag(flags, "workflow") ?? "WORKFLOW.md");
+    try {
+      const workflow = loadWorkflow(workflowPath);
+      const config = resolveConfig(workflow.config, { workflowDir: dirname(workflowPath) });
+      const client = new LinearClient(config.tracker);
+
+      if (!flags.execute) {
+        const runtime = new Runtime({ config, source: client, worker: async () => ({ ok: true }), now: () => Date.now() });
+        const dispatch = runtime.planDispatch(await client.fetchCandidateIssues());
+        for (const issue of dispatch) console.log(`would work ${issue.identifier} (${issue.state})`);
+        console.log(`\nDry run — ${dispatch.length} triage:fixable issue(s) would be worked. Re-run with --execute to launch Claude agents.`);
+        return 0;
+      }
+
+      const worker = async (issue: Issue) => {
+        let ok = false;
+        await makeAgentDispatcher({
+          config,
+          promptTemplate: workflow.promptTemplate,
+          makeClient: () => new ClaudeAgentClient({ turnTimeoutMs: config.codex.turnTimeoutMs }),
+          onOutcome: (_issue, outcome) => {
+            ok = outcome.ok;
+          },
+        })(issue);
+        return { ok };
+      };
+
+      await runDelivery(
+        { config, source: client, worker, now: () => Date.now(), log: (m) => console.error(m) },
+        { once: Boolean(flags.once) },
+      );
+      return 0;
+    } catch (error) {
+      const code = error instanceof JazzbandError ? error.code : "error";
+      console.error(JSON.stringify({ ok: false, code, message: (error as Error).message }, null, 2));
+      return 1;
+    }
+  }
+
+  if (command === "plan") {
     const plan = createWorkflowPlan(
       {
         ticket: stringFlag(flags, "ticket"),
