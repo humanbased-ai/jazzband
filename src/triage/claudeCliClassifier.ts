@@ -14,6 +14,7 @@ Classify it into exactly one verdict:
 - unimportant: praise, noise, test junk, or a pure cosmetic wish with no defect.
 - dangerous: would require touching auth, identity/KYC, payments, billing, secrets, migrations, infra, or data deletion.
 When unsure between fixable and anything else, do NOT pick fixable. provider_unavailable / third-party-outage / "temporarily unavailable" symptoms are dangerous or operational, never fixable.
+Pin the EXACT control the user names — match their wording. A "watch button" is the Watch/Follow control, NOT a nearby Enroll/Join button; "watch" and "enroll" are different actions. When fixable, fixArea MUST name the specific component/file that renders THAT control.
 
 Respond with ONLY a JSON object, no prose and no code fences:
 {"verdict":"fixable|needs_confirmation|unimportant|dangerous","fingerprint":"short normalized symptom key","risk":"critical|high|normal","surface":"e.g. portal:webapp or empty string","fixArea":"file/function if fixable else empty string","reason":"one sentence"}`;

@@ -82,7 +82,8 @@ function parseInterval(value: string | undefined, fallbackMs: number): number {
 }
 
 const DEFAULT_PROMPT =
-  "Fix {{ issue.identifier }}: {{ issue.title }}. Write a test first, keep the change surgical, open a PR, and do NOT merge.";
+  "Fix {{ issue.identifier }}: {{ issue.title }}.\n\n{{ issue.description }}\n\n" +
+  "Fix EXACTLY the control/behavior the user reported — match their wording (e.g. a 'watch' button is the Watch/Follow control, not a nearby Enroll/Join button); locate the right component and confirm it matches before editing. Write a test first, keep the change surgical. Do NOT touch git — jazzband opens the PR after you finish.";
 
 /** Build config from either --workflow <path> or --project <slug>, applying flag overrides. */
 function loadCliConfig(flags: Record<string, string | boolean>): { config: ServiceConfig; promptTemplate: string } {

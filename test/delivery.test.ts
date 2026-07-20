@@ -71,3 +71,25 @@ test("skips the PR when the agent produced no changes", async () => {
   assert.deepEqual(result, { opened: false, reason: "agent made no changes" });
   assert.deepEqual(calls, [["git", "status", "--porcelain"]]); // stopped after status
 });
+
+test("verify gate blocks the PR when the check fails, and allows it when it passes", async () => {
+  // Failing verify → no PR, and we never reach git checkout.
+  const failCalls: string[][] = [];
+  const failExec: Exec = async (command, args) => {
+    failCalls.push([command, ...args]);
+    if (command === "git" && args[0] === "status") return { code: 0, stdout: " M x.tsx\n", stderr: "" };
+    if (command === "bash") return { code: 1, stdout: "", stderr: "2 tests failed" };
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  const blocked = await openPullRequest({ ...OPTS, exec: failExec, verify: "npm test" });
+  assert.equal(blocked.opened, false);
+  assert.match((blocked as { reason: string }).reason, /verify failed/);
+  assert.ok(!failCalls.some((c) => c[0] === "git" && c[1] === "checkout")); // never branched
+
+  // Passing verify → PR opens.
+  const { exec } = fakeExec(" M x.tsx\n");
+  const passExec: Exec = async (command, args) =>
+    command === "bash" ? { code: 0, stdout: "", stderr: "" } : exec(command, args, { cwd: "", timeoutMs: 0 });
+  const opened = await openPullRequest({ ...OPTS, exec: passExec, verify: "npm test" });
+  assert.equal(opened.opened, true);
+});

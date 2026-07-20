@@ -41,6 +41,8 @@ export interface OpenPrOptions {
   base: string;
   repo: string;
   remoteUrl: string;
+  /** Quality-gate command (bash -lc) run in the workspace; non-zero exit blocks the PR. */
+  verify?: string | null;
   exec?: Exec;
   timeoutMs?: number;
 }
@@ -67,6 +69,14 @@ export async function openPullRequest(options: OpenPrOptions): Promise<OpenPrRes
   const status = await exec("git", ["status", "--porcelain"], at);
   if (status.stdout.trim() === "") {
     return { opened: false, reason: "agent made no changes" };
+  }
+
+  // Quality gate: don't open a PR whose change doesn't pass the configured check.
+  if (options.verify && options.verify.trim() !== "") {
+    const check = await exec("bash", ["-lc", options.verify], at);
+    if (check.code !== 0) {
+      return { opened: false, reason: `verify failed (exit ${check.code}): ${check.stderr.trim().slice(0, 200)}` };
+    }
   }
 
   const run = async (cmd: string, args: string[], allowFail = false): Promise<ExecResult> => {

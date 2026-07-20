@@ -124,6 +124,8 @@ export interface DeliveryConfig {
   repo: string | null;
   /** Push URL for the branch (defaults to https://github.com/<repo>.git). */
   remoteUrl: string | null;
+  /** Shell command run in the workspace as a quality gate; a non-zero exit blocks the PR. */
+  verify: string | null;
 }
 
 /** Typed runtime view derived from WorkflowDefinition.config plus environment resolution. */
