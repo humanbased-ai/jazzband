@@ -118,9 +118,11 @@ function loadCliConfig(flags: Record<string, string | boolean>): { config: Servi
 function toSource(client: LinearClient, flags: Record<string, string | boolean>): RuntimeSource {
   const raw = Number(stringFlag(flags, "limit"));
   const limit = Number.isInteger(raw) && raw > 0 ? raw : undefined;
+  const only = stringFlag(flags, "issue")?.toLowerCase();
   return {
     fetchCandidateIssues: async () => {
-      const issues = await client.fetchCandidateIssues();
+      let issues = await client.fetchCandidateIssues();
+      if (only) issues = issues.filter((i) => i.identifier.toLowerCase() === only);
       return limit ? issues.slice(0, limit) : issues;
     },
     fetchIssueStatesByIds: (ids) => client.fetchIssueStatesByIds(ids),
@@ -198,8 +200,12 @@ async function doRun(
       config,
       promptTemplate,
       makeClient: () => new ClaudeAgentClient({ turnTimeoutMs: config.codex.turnTimeoutMs }),
-      onOutcome: (_issue, outcome) => {
+      onOutcome: (i, outcome) => {
         ok = outcome.ok;
+        console.log(`run ${i.identifier}: agent ${outcome.ok ? "succeeded" : "failed"} (${outcome.turns} turn(s))`);
+      },
+      onPr: (i, result) => {
+        console.log(result.opened ? `run ${i.identifier}: PR opened → ${result.prUrl}` : `run ${i.identifier}: no PR (${result.reason})`);
       },
     })(issue);
     return { ok };

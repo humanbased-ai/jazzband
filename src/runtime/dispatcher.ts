@@ -4,6 +4,7 @@ import { prepareWorkspace } from "../core/workspace.js";
 import type { Issue, ServiceConfig } from "../core/types.js";
 import { runAttempt, type AppServerClient, type AttemptOutcome } from "../agent/runner.js";
 import type { EventSink } from "../agent/events.js";
+import { openPullRequest, type OpenPrResult } from "./delivery.js";
 import type { Dispatcher } from "./loop.js";
 
 export interface DispatcherDeps {
@@ -14,6 +15,7 @@ export interface DispatcherDeps {
   makeClient: (issue: Issue) => AppServerClient;
   onEvent?: EventSink;
   onOutcome?: (issue: Issue, outcome: AttemptOutcome) => void;
+  onPr?: (issue: Issue, result: OpenPrResult) => void;
 }
 
 /**
@@ -52,5 +54,17 @@ export function makeAgentDispatcher(deps: DispatcherDeps): Dispatcher {
     });
 
     deps.onOutcome?.(issue, outcome);
+
+    // Deterministically open the PR when the agent succeeded (SPEC §10.7 boundary: never merge).
+    if (outcome.ok && deps.config.delivery.repo && deps.config.delivery.remoteUrl) {
+      const result = await openPullRequest({
+        workspacePath: workspace.path,
+        issue,
+        base: deps.config.workspace.base,
+        repo: deps.config.delivery.repo,
+        remoteUrl: deps.config.delivery.remoteUrl,
+      });
+      deps.onPr?.(issue, result);
+    }
   };
 }

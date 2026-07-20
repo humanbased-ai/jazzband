@@ -118,6 +118,14 @@ export interface ClassifierConfig {
   authToken: string | null;
 }
 
+/** How jazzband opens the PR after the agent finishes (deterministic git wrapper). */
+export interface DeliveryConfig {
+  /** GitHub "owner/repo" to open the PR against; null disables auto-PR. */
+  repo: string | null;
+  /** Push URL for the branch (defaults to https://github.com/<repo>.git). */
+  remoteUrl: string | null;
+}
+
 /** Typed runtime view derived from WorkflowDefinition.config plus environment resolution. */
 export interface ServiceConfig {
   tracker: TrackerConfig;
@@ -127,4 +135,5 @@ export interface ServiceConfig {
   agent: AgentConfig;
   codex: CodexConfig;
   classifier: ClassifierConfig;
+  delivery: DeliveryConfig;
 }

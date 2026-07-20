@@ -155,6 +155,12 @@ function resolveCodex(raw: RawConfig): CodexConfig {
   };
 }
 
+function resolveDelivery(raw: RawConfig): ServiceConfig["delivery"] {
+  const repo = optString(raw.repo, "delivery.repo");
+  const remoteUrl = optString(raw.remote_url, "delivery.remote_url") ?? (repo ? `https://github.com/${repo}.git` : null);
+  return { repo, remoteUrl };
+}
+
 function resolveClassifier(raw: RawConfig, env: Env): ServiceConfig["classifier"] {
   const runner = optString(raw.runner, "classifier.runner") ?? "api";
   if (runner !== "api" && runner !== "claude-cli") {
@@ -209,6 +215,7 @@ export function resolveConfig(rawConfig: RawConfig, options: ResolveConfigOption
     agent: resolveAgent(agentRaw),
     codex: resolveCodex(codexRaw),
     classifier: resolveClassifier(classifierRaw, env),
+    delivery: resolveDelivery(asObject(rawConfig.delivery, "delivery")),
   };
 }
 
