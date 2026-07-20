@@ -15,6 +15,7 @@ import { ClaudeAgentClient } from "../agent/claudeClient.js";
 import { runLoop } from "../runtime/loop.js";
 import { makeAgentDispatcher } from "../runtime/dispatcher.js";
 import { Runtime, run as runDelivery } from "../runtime/runtime.js";
+import { StatusStore, serveStatus } from "../runtime/status.js";
 import { AnthropicClassifier } from "../triage/anthropicClassifier.js";
 import { ClaudeCliClassifier } from "../triage/claudeCliClassifier.js";
 import { planTriage } from "../triage/engine.js";
@@ -23,7 +24,7 @@ import { applyTriage } from "../triage/executor.js";
 const USAGE = `Jazzband — TypeScript orchestration for ticket-driven agent workflows
 
 Usage:
-  jzb watch  --project <slug> [--interval 30s] [--limit N] [--execute]
+  jzb watch  --project <slug> [--interval 30s] [--limit N] [--status-port 7337] [--execute]
   jzb triage (--project <slug> | --workflow <path>) [--limit N] [--execute]
   jzb run    (--project <slug> | --workflow <path>) [--once] [--limit N] [--execute]
   jzb labels (--project <slug> | --workflow <path>)
@@ -164,19 +165,22 @@ function makeClassifier(config: ServiceConfig) {
       });
 }
 
+/** Sink for user-facing progress lines; the status server swaps this to also record events. */
+let report: (text: string) => void = (text) => console.log(text);
+
 /** Classify + (optionally) label the project's candidates. */
 async function doTriage(config: ServiceConfig, source: RuntimeSource, execute: boolean): Promise<void> {
   const issues = await source.fetchCandidateIssues();
   const plan = await planTriage(issues, makeClassifier(config));
   for (const d of plan.decisions) {
     const dup = d.duplicateOf ? ` → dup of ${d.duplicateOf}` : "";
-    console.log(`triage ${d.issue.identifier} ${d.verdict}${dup} :: ${d.labels.join(", ")}`);
+    report(`triage ${d.issue.identifier} ${d.verdict}${dup} :: ${d.labels.join(", ")}`);
   }
   if (execute) {
     const result = await applyTriage(plan, new LinearWriteClient(config.tracker));
-    console.log(`triage applied: labeled ${result.labeled}`);
+    report(`triage applied: labeled ${result.labeled}`);
   } else {
-    console.log(`triage dry-run — ${plan.decisions.length} classified. Add --execute to write labels.`);
+    report(`triage dry-run — ${plan.decisions.length} classified. Add --execute to write labels.`);
   }
 }
 
@@ -191,8 +195,8 @@ async function doRun(
   if (!execute) {
     const runtime = new Runtime({ config, source, worker: async () => ({ ok: true }), now: () => Date.now() });
     const dispatch = runtime.planDispatch(await source.fetchCandidateIssues());
-    for (const issue of dispatch) console.log(`run would work ${issue.identifier} (${issue.state})`);
-    console.log(`run dry-run — ${dispatch.length} triage:fixable issue(s). Add --execute to launch Claude agents.`);
+    for (const issue of dispatch) report(`run would work ${issue.identifier} (${issue.state})`);
+    report(`run dry-run — ${dispatch.length} triage:fixable issue(s). Add --execute to launch Claude agents.`);
     return;
   }
   const worker = async (issue: Issue) => {
@@ -203,14 +207,14 @@ async function doRun(
       makeClient: () => new ClaudeAgentClient({ turnTimeoutMs: config.codex.turnTimeoutMs }),
       onOutcome: (i, outcome) => {
         ok = outcome.ok;
-        console.log(`run ${i.identifier}: agent ${outcome.ok ? "succeeded" : "failed"} (${outcome.turns} turn(s))`);
+        report(`run ${i.identifier}: agent ${outcome.ok ? "succeeded" : "failed"} (${outcome.turns} turn(s))`);
       },
       onPr: async (i, result) => {
         if (!result.opened) {
-          console.log(`run ${i.identifier}: no PR (${result.reason})`);
+          report(`run ${i.identifier}: no PR (${result.reason})`);
           return;
         }
-        console.log(`run ${i.identifier}: PR opened → ${result.prUrl}`);
+        report(`run ${i.identifier}: PR opened → ${result.prUrl}`);
         // Close the loop: link the PR on the Linear issue and (optionally) move its state.
         try {
           const writer = new LinearWriteClient(config.tracker);
@@ -328,6 +332,29 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       const source = toSource(client, flags);
       const execute = Boolean(flags.execute);
       if (execute) await startupCleanup(config, client);
+
+      const statusPort = Number(stringFlag(flags, "status-port"));
+      if (Number.isInteger(statusPort) && statusPort > 0) {
+        const store = new StatusStore({
+          startedAt: new Date().toISOString(),
+          project: config.tracker.projectSlug ?? "?",
+          mode: execute ? "execute" : "dry-run",
+        });
+        serveStatus(store, statusPort);
+        report = (text) => {
+          console.log(text);
+          store.event(new Date().toISOString(), text);
+        };
+        console.error(`status: http://127.0.0.1:${statusPort}`);
+        for (;;) {
+          store.tick(new Date().toISOString());
+          await doTriage(config, source, execute);
+          await doRun(config, promptTemplate, source, execute, true);
+          if (flags.once) return 0;
+          await sleep(config.polling.intervalMs);
+        }
+      }
+
       console.error(`watch: ${config.tracker.projectSlug} every ${config.polling.intervalMs}ms${execute ? " (EXECUTE)" : " (dry-run)"}`);
       for (;;) {
         await doTriage(config, source, execute); // classify + label
