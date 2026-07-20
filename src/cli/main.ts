@@ -205,8 +205,23 @@ async function doRun(
         ok = outcome.ok;
         console.log(`run ${i.identifier}: agent ${outcome.ok ? "succeeded" : "failed"} (${outcome.turns} turn(s))`);
       },
-      onPr: (i, result) => {
-        console.log(result.opened ? `run ${i.identifier}: PR opened → ${result.prUrl}` : `run ${i.identifier}: no PR (${result.reason})`);
+      onPr: async (i, result) => {
+        if (!result.opened) {
+          console.log(`run ${i.identifier}: no PR (${result.reason})`);
+          return;
+        }
+        console.log(`run ${i.identifier}: PR opened → ${result.prUrl}`);
+        // Close the loop: link the PR on the Linear issue and (optionally) move its state.
+        try {
+          const writer = new LinearWriteClient(config.tracker);
+          await writer.createComment(i.id, `🔧 Jazzband opened a PR for this bug: ${result.prUrl}\n\nReview and merge when ready — Jazzband never merges.`);
+          if (config.delivery.reviewState) {
+            const stateId = await writer.resolveStateId(config.delivery.reviewState);
+            await writer.updateIssue(i.id, { stateId });
+          }
+        } catch (error) {
+          console.error(`run ${i.identifier}: PR opened but Linear write-back failed: ${(error as Error).message}`);
+        }
       },
     })(issue);
     return { ok };

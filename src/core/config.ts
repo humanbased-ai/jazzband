@@ -158,7 +158,12 @@ function resolveCodex(raw: RawConfig): CodexConfig {
 function resolveDelivery(raw: RawConfig): ServiceConfig["delivery"] {
   const repo = optString(raw.repo, "delivery.repo");
   const remoteUrl = optString(raw.remote_url, "delivery.remote_url") ?? (repo ? `https://github.com/${repo}.git` : null);
-  return { repo, remoteUrl, verify: optString(raw.verify, "delivery.verify") };
+  return {
+    repo,
+    remoteUrl,
+    verify: optString(raw.verify, "delivery.verify"),
+    reviewState: optString(raw.review_state, "delivery.review_state"),
+  };
 }
 
 function resolveClassifier(raw: RawConfig, env: Env): ServiceConfig["classifier"] {

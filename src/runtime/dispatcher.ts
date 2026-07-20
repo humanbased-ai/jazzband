@@ -15,7 +15,7 @@ export interface DispatcherDeps {
   makeClient: (issue: Issue) => AppServerClient;
   onEvent?: EventSink;
   onOutcome?: (issue: Issue, outcome: AttemptOutcome) => void;
-  onPr?: (issue: Issue, result: OpenPrResult) => void;
+  onPr?: (issue: Issue, result: OpenPrResult) => void | Promise<void>;
 }
 
 /**
@@ -65,7 +65,7 @@ export function makeAgentDispatcher(deps: DispatcherDeps): Dispatcher {
         remoteUrl: deps.config.delivery.remoteUrl,
         verify: deps.config.delivery.verify,
       });
-      deps.onPr?.(issue, result);
+      await deps.onPr?.(issue, result);
     }
   };
 }
