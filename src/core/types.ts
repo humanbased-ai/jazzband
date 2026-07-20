@@ -126,8 +126,6 @@ export interface DeliveryConfig {
   remoteUrl: string | null;
   /** Shell command run in the workspace as a quality gate; a non-zero exit blocks the PR. */
   verify: string | null;
-  /** Tracker state to move the issue to after a PR opens (e.g. "In Review"); null leaves it. */
-  reviewState: string | null;
 }
 
 /** Typed runtime view derived from WorkflowDefinition.config plus environment resolution. */

@@ -25,7 +25,7 @@ const USAGE = `Jazzband — TypeScript orchestration for ticket-driven agent wor
 
 Usage:
   jzb watch  --project <slug> [--interval 30s] [--limit N] [--status-port 7337] [--execute]
-  jzb triage (--project <slug> | --workflow <path>) [--limit N] [--execute]
+  jzb triage (--project <slug> | --workflow <path>) [--limit N] [--retriage] [--execute]
   jzb run    (--project <slug> | --workflow <path>) [--once] [--limit N] [--execute]
   jzb labels (--project <slug> | --workflow <path>)
   jzb check | poll [--project <slug> | --workflow <path>]
@@ -37,7 +37,8 @@ Use --states "Backlog,Todo,In Progress" to set which issue states to watch.
 
 Commands:
   watch    Continuously monitor a project: triage → work fixable, every --interval. The one-liner.
-  triage   Classify + dedup + label bug reports; --execute writes labels/comments (else dry-run).
+  triage   Classify + dedup + label bug reports; skips already-triaged (--retriage forces).
+           --execute writes labels/comments (else dry-run).
   run      Work triage:fixable issues with a Claude coding agent; --execute launches agents.
   labels   Ensure the triage:* labels exist on the team.
   check    Resolve config + run dispatch preflight. poll: show one tick's dispatch decision.
@@ -169,8 +170,22 @@ function makeClassifier(config: ServiceConfig) {
 let report: (text: string) => void = (text) => console.log(text);
 
 /** Classify + (optionally) label the project's candidates. */
-async function doTriage(config: ServiceConfig, source: RuntimeSource, execute: boolean): Promise<void> {
-  const issues = await source.fetchCandidateIssues();
+async function doTriage(
+  config: ServiceConfig,
+  source: RuntimeSource,
+  execute: boolean,
+  retriage = false,
+): Promise<void> {
+  const all = await source.fetchCandidateIssues();
+  // Skip re-classifying issues that already carry a triage:* verdict — saves the LLM call.
+  // New/unlabeled issues are always classified; --retriage forces a full re-run.
+  const issues = retriage ? all : all.filter((i) => !i.labels.some((l) => l.startsWith("triage:")));
+  const skipped = all.length - issues.length;
+  if (skipped > 0) report(`triage: skipped ${skipped} already-triaged (use --retriage to re-run)`);
+  if (issues.length === 0) {
+    report("triage: nothing new to classify");
+    return;
+  }
   const plan = await planTriage(issues, makeClassifier(config));
   for (const d of plan.decisions) {
     const dup = d.duplicateOf ? ` → dup of ${d.duplicateOf}` : "";
@@ -215,16 +230,14 @@ async function doRun(
           return;
         }
         report(`run ${i.identifier}: PR opened → ${result.prUrl}`);
-        // Close the loop: link the PR on the Linear issue and (optionally) move its state.
+        // Close the loop: comment the PR link on the Linear issue (no state change).
         try {
-          const writer = new LinearWriteClient(config.tracker);
-          await writer.createComment(i.id, `🔧 Jazzband opened a PR for this bug: ${result.prUrl}\n\nReview and merge when ready — Jazzband never merges.`);
-          if (config.delivery.reviewState) {
-            const stateId = await writer.resolveStateId(config.delivery.reviewState);
-            await writer.updateIssue(i.id, { stateId });
-          }
+          await new LinearWriteClient(config.tracker).createComment(
+            i.id,
+            `🔧 Jazzband opened a PR for this bug: ${result.prUrl}\n\nReview and merge when ready — Jazzband never merges.`,
+          );
         } catch (error) {
-          console.error(`run ${i.identifier}: PR opened but Linear write-back failed: ${(error as Error).message}`);
+          console.error(`run ${i.identifier}: PR opened but Linear comment failed: ${(error as Error).message}`);
         }
       },
     })(issue);
@@ -302,7 +315,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     try {
       const { config } = loadCliConfig(flags);
       const source = toSource(new LinearClient(config.tracker), flags);
-      await doTriage(config, source, Boolean(flags.execute));
+      await doTriage(config, source, Boolean(flags.execute), Boolean(flags.retriage));
       return 0;
     } catch (error) {
       const code = error instanceof JazzbandError ? error.code : "error";
@@ -348,7 +361,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         console.error(`status: http://127.0.0.1:${statusPort}`);
         for (;;) {
           store.tick(new Date().toISOString());
-          await doTriage(config, source, execute);
+          await doTriage(config, source, execute, Boolean(flags.retriage));
           await doRun(config, promptTemplate, source, execute, true);
           if (flags.once) return 0;
           await sleep(config.polling.intervalMs);
@@ -357,7 +370,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 
       console.error(`watch: ${config.tracker.projectSlug} every ${config.polling.intervalMs}ms${execute ? " (EXECUTE)" : " (dry-run)"}`);
       for (;;) {
-        await doTriage(config, source, execute); // classify + label
+        await doTriage(config, source, execute, Boolean(flags.retriage));
         await doRun(config, promptTemplate, source, execute, true); // work the fixable ones
         if (flags.once) return 0;
         await sleep(config.polling.intervalMs);
