@@ -24,6 +24,16 @@ export interface Classifier {
   classify(issue: Issue): Promise<Classification>;
 }
 
+export interface VerifyResult {
+  safe: boolean;
+  reason: string;
+}
+
+/** Adversarial second opinion on a `fixable` verdict — argues whether it's really safe to auto-fix. */
+export interface Verifier {
+  verify(issue: Issue, classification: Classification): Promise<VerifyResult>;
+}
+
 /** What triage decided to do with one issue. */
 export interface TriageDecision {
   issue: Issue;

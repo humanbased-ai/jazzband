@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { dedup } from "../src/triage/dedup.js";
 import { planTriage } from "../src/triage/engine.js";
-import type { Classification, Classifier } from "../src/triage/types.js";
+import type { Classification, Classifier, Verifier } from "../src/triage/types.js";
 import type { Issue } from "../src/core/types.js";
 
 function issue(id: string, identifier: string): Issue {
@@ -88,4 +88,29 @@ test("planTriage labels, dedups, and promotes only safe fixable issues", async (
   // No promotions leak from unimportant.
   assert.equal(byId.get("p")?.promote, false);
   assert.equal(decisions.filter((d) => d.promote).length, 1);
+});
+
+test("adversarial verifier demotes a fixable that fails verification", async () => {
+  const issues = [issue("r", "IN-1977"), issue("g", "IN-3000")];
+  const classifier = fakeClassifier({
+    r: { verdict: "fixable", fingerprint: "role-picker", fixArea: "wrong.tsx" },
+    g: { verdict: "fixable", fingerprint: "genuine", fixArea: "right.tsx" },
+  });
+  // Skeptic rejects IN-1977 (wrong control), passes IN-3000.
+  const verifier: Verifier = {
+    async verify(i) {
+      return i.identifier === "IN-1977"
+        ? { safe: false, reason: "fixArea is the wrong control" }
+        : { safe: true, reason: "matches" };
+    },
+  };
+
+  const { decisions } = await planTriage(issues, classifier, verifier);
+  const byId = new Map(decisions.map((d) => [d.issue.id, d]));
+
+  assert.equal(byId.get("r")?.verdict, "needs_confirmation"); // demoted
+  assert.equal(byId.get("r")?.promote, false);
+  assert.match(byId.get("r")?.reason ?? "", /verify:/);
+  assert.equal(byId.get("g")?.verdict, "fixable"); // survived
+  assert.equal(byId.get("g")?.promote, true);
 });

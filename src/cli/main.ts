@@ -18,6 +18,7 @@ import { Runtime, run as runDelivery } from "../runtime/runtime.js";
 import { StatusStore, serveStatus } from "../runtime/status.js";
 import { AnthropicClassifier } from "../triage/anthropicClassifier.js";
 import { ClaudeCliClassifier } from "../triage/claudeCliClassifier.js";
+import { ClaudeCliVerifier } from "../triage/claudeCliVerifier.js";
 import { planTriage } from "../triage/engine.js";
 import { applyTriage } from "../triage/executor.js";
 
@@ -38,6 +39,7 @@ Use --states "Backlog,Todo,In Progress" to set which issue states to watch.
 Commands:
   watch    Continuously monitor a project: triage → work fixable, every --interval. The one-liner.
   triage   Classify + dedup + label bug reports; skips already-triaged (--retriage forces).
+           --strict adds an adversarial second opinion on each fixable (demotes shaky ones).
            --execute writes labels/comments (else dry-run).
   run      Work triage:fixable issues with a Claude coding agent; --execute launches agents.
   labels   Ensure the triage:* labels exist on the team.
@@ -181,6 +183,7 @@ async function doTriage(
   source: RuntimeSource,
   execute: boolean,
   retriage = false,
+  strict = false,
 ): Promise<void> {
   const all = await source.fetchCandidateIssues();
   // Skip re-classifying issues that already carry a triage:* verdict — saves the LLM call.
@@ -192,7 +195,10 @@ async function doTriage(
     report("triage: nothing new to classify");
     return;
   }
-  const plan = await planTriage(issues, makeClassifier(config));
+  const verifier = strict
+    ? new ClaudeCliVerifier({ command: config.classifier.command, model: config.classifier.model })
+    : undefined;
+  const plan = await planTriage(issues, makeClassifier(config), verifier);
   for (const d of plan.decisions) {
     const dup = d.duplicateOf ? ` → dup of ${d.duplicateOf}` : "";
     report(`triage ${d.issue.identifier} ${d.verdict}${dup} :: ${d.labels.join(", ")}`);
@@ -321,7 +327,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     try {
       const { config } = loadCliConfig(flags);
       const source = toSource(new LinearClient(config.tracker), flags);
-      await doTriage(config, source, Boolean(flags.execute), Boolean(flags.retriage));
+      await doTriage(config, source, Boolean(flags.execute), Boolean(flags.retriage), Boolean(flags.strict));
       return 0;
     } catch (error) {
       const code = error instanceof JazzbandError ? error.code : "error";
@@ -367,7 +373,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         console.error(`status: http://127.0.0.1:${statusPort}`);
         for (;;) {
           store.tick(new Date().toISOString());
-          await doTriage(config, source, execute, Boolean(flags.retriage));
+          await doTriage(config, source, execute, Boolean(flags.retriage), Boolean(flags.strict));
           await doRun(config, promptTemplate, source, execute, true);
           if (flags.once) return 0;
           await sleep(config.polling.intervalMs);
@@ -376,7 +382,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 
       console.error(`watch: ${config.tracker.projectSlug} every ${config.polling.intervalMs}ms${execute ? " (EXECUTE)" : " (dry-run)"}`);
       for (;;) {
-        await doTriage(config, source, execute, Boolean(flags.retriage));
+        await doTriage(config, source, execute, Boolean(flags.retriage), Boolean(flags.strict));
         await doRun(config, promptTemplate, source, execute, true); // work the fixable ones
         if (flags.once) return 0;
         await sleep(config.polling.intervalMs);

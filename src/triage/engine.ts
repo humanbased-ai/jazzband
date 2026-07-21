@@ -1,6 +1,6 @@
 import type { Issue } from "../core/types.js";
 import { dedup } from "./dedup.js";
-import type { Classification, Classifier, TriageDecision, TriagePlan, Verdict } from "./types.js";
+import type { Classification, Classifier, TriageDecision, TriagePlan, Verdict, Verifier } from "./types.js";
 
 const VERDICT_LABEL: Record<Verdict, string> = {
   fixable: "triage:fixable",
@@ -25,12 +25,28 @@ function labelsFor(classification: Classification): string[] {
  *
  * Pass issues oldest-first so the canonical of each duplicate group is the oldest report.
  */
-export async function planTriage(issues: Issue[], classifier: Classifier): Promise<TriagePlan> {
+export async function planTriage(
+  issues: Issue[],
+  classifier: Classifier,
+  verifier?: Verifier,
+): Promise<TriagePlan> {
   const classifications = await Promise.all(issues.map((issue) => classifier.classify(issue)));
   const byId = new Map(classifications.map((c) => [c.issueId, c]));
   const identifierById = new Map(issues.map((issue) => [issue.id, issue.identifier]));
 
   const { duplicateOf } = dedup(classifications.map((c) => ({ id: c.issueId, fingerprint: c.fingerprint })));
+
+  // Adversarial second opinion: a fixable verdict that fails verification is demoted so it
+  // is labeled + left for a human instead of auto-fixed on a shaky call.
+  if (verifier) {
+    for (const issue of issues) {
+      if (duplicateOf.has(issue.id)) continue;
+      const c = byId.get(issue.id)!;
+      if (c.verdict !== "fixable") continue;
+      const { safe, reason } = await verifier.verify(issue, c);
+      if (!safe) byId.set(issue.id, { ...c, verdict: "needs_confirmation", reason: `verify: ${reason}` });
+    }
+  }
 
   const decisions: TriageDecision[] = issues.map((issue) => {
     const canonicalId = duplicateOf.get(issue.id);
