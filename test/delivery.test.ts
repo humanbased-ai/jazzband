@@ -65,6 +65,15 @@ test("opens a PR: branch, commit, push, gh pr create — returns the URL", async
   assert.ok(gh.includes("--repo") && gh.includes("humanbased-ai/monorepo") && gh.includes("staging"));
 });
 
+test("the agent's summary becomes the PR body", async () => {
+  const { exec, calls } = fakeExec(" M x.tsx\n");
+  await openPullRequest({ ...OPTS, exec, body: "## What was wrong\nThe Watch toggle rolled back." });
+  const gh = calls.find((c) => c[0] === "gh")!;
+  const bodyIdx = gh.indexOf("--body");
+  assert.match(gh[bodyIdx + 1]!, /What was wrong[\s\S]*Watch toggle rolled back/);
+  assert.match(gh[bodyIdx + 1]!, /Opened by Jazzband/); // footer preserved
+});
+
 test("skips the PR when the agent produced no changes", async () => {
   const { exec, calls } = fakeExec("");
   const result = await openPullRequest({ ...OPTS, exec });

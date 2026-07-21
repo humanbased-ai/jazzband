@@ -109,7 +109,10 @@ test("runAttempt runs one turn, forwards events, and stops the client", async ()
     now: FIXED_NOW,
   });
 
-  assert.deepEqual(outcome, { ok: true, turns: 1, threadId: "thread-1", error: null });
+  assert.deepEqual(
+    { ok: outcome.ok, turns: outcome.turns, threadId: outcome.threadId, error: outcome.error },
+    { ok: true, turns: 1, threadId: "thread-1", error: null },
+  );
   assert.deepEqual(events, ["session_started", "turn_completed"]);
   assert.equal(client.stopped, 1);
 });

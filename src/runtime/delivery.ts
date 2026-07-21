@@ -43,6 +43,8 @@ export interface OpenPrOptions {
   remoteUrl: string;
   /** Quality-gate command (bash -lc) run in the workspace; non-zero exit blocks the PR. */
   verify?: string | null;
+  /** PR body (the agent's evidence). Falls back to a minimal body when absent. */
+  body?: string;
   exec?: Exec;
   timeoutMs?: number;
 }
@@ -88,7 +90,8 @@ export async function openPullRequest(options: OpenPrOptions): Promise<OpenPrRes
   };
 
   const title = `fix(${options.issue.identifier.toLowerCase()}): ${options.issue.title}`;
-  const body = `Fixes ${options.issue.url ?? options.issue.identifier}.\n\n🤖 Opened by Jazzband. Do not merge without review.`;
+  const evidence = options.body?.trim() ? `${options.body.trim()}\n\n---\n` : "";
+  const body = `${evidence}Fixes ${options.issue.url ?? options.issue.identifier}.\n\n🤖 Opened by Jazzband. Do not merge without review.`;
 
   await run("git", ["checkout", "-b", branch]);
   await run("git", ["add", "-A"]);

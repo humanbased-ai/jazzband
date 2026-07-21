@@ -51,6 +51,7 @@ interface ClaudeResult {
   is_error?: boolean;
   session_id?: string;
   subtype?: string;
+  result?: string;
 }
 
 /**
@@ -66,6 +67,7 @@ export class ClaudeAgentClient implements AppServerClient {
   private readonly spawnAgent: SpawnAgent;
   private cwd = "";
   private sessionId: string | null = null;
+  private lastSummary = "";
 
   constructor(options: ClaudeAgentOptions = {}) {
     this.command = options.command ?? "claude";
@@ -98,10 +100,16 @@ export class ClaudeAgentClient implements AppServerClient {
       parsed = null;
     }
     if (parsed?.session_id) this.sessionId = parsed.session_id;
+    if (typeof parsed?.result === "string" && parsed.result.trim() !== "") this.lastSummary = parsed.result;
 
     if (result.code !== 0) return "failed";
     if (parsed?.is_error) return "failed";
     return "completed";
+  }
+
+  /** The agent's final message from the last turn — used as the PR body (its own evidence). */
+  summary(): string | undefined {
+    return this.lastSummary.trim() === "" ? undefined : this.lastSummary;
   }
 
   async stop(): Promise<void> {

@@ -17,6 +17,8 @@ export interface AppServerClient {
   start(options: { cwd: string; issue: Issue }): Promise<StartResult>;
   runTurn(options: { prompt: string; continuation: boolean; threadId: string }): Promise<TurnSignal>;
   stop(): Promise<void>;
+  /** The agent's final message (evidence), used as the PR body when present. */
+  summary?(): string | undefined;
 }
 
 export interface RunAttemptContext {
@@ -40,6 +42,8 @@ export interface AttemptOutcome {
   turns: number;
   threadId: string | null;
   error: AgentError | null;
+  /** The agent's final message (evidence), when the client exposes it. */
+  summary?: string;
 }
 
 const DEFAULT_CONTINUATION = "Continue working on the issue.";
@@ -87,7 +91,7 @@ export async function runAttempt(ctx: RunAttemptContext): Promise<AttemptOutcome
       const cont = ctx.shouldContinue ? await ctx.shouldContinue(turns) : false;
       if (!cont) break;
     }
-    return { ok: true, turns, threadId: start.threadId, error: null };
+    return { ok: true, turns, threadId: start.threadId, error: null, summary: ctx.client.summary?.() };
   } finally {
     await ctx.client.stop();
   }

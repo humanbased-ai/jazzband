@@ -85,7 +85,13 @@ function parseInterval(value: string | undefined, fallbackMs: number): number {
 
 const DEFAULT_PROMPT =
   "Fix {{ issue.identifier }}: {{ issue.title }}.\n\n{{ issue.description }}\n\n" +
-  "Fix EXACTLY the control/behavior the user reported — match their wording (e.g. a 'watch' button is the Watch/Follow control, not a nearby Enroll/Join button); locate the right component and confirm it matches before editing. Write a test first, keep the change surgical. Do NOT touch git — jazzband opens the PR after you finish.";
+  "Steps:\n" +
+  "1. Locate the EXACT control/behavior the user reported — match their wording (e.g. a 'watch' button is the Watch/Follow control, NOT a nearby Enroll/Join button). Confirm the component you found is the reported one before editing; if you can't confirm it, stop and explain rather than guess.\n" +
+  "2. Reproduce the bug (a failing test that captures the reported symptom).\n" +
+  "3. Fix it surgically; make the failing test pass; run the touched package's tests.\n" +
+  "4. Do NOT touch git — jazzband opens the PR.\n\n" +
+  "End your final message with a concise PR body in markdown (it becomes the PR description):\n" +
+  "## What was wrong\n<root cause, citing the exact control/file>\n## Fix\n<the change>\n## Verification\n<the test added + result>";
 
 /** Build config from either --workflow <path> or --project <slug>, applying flag overrides. */
 function loadCliConfig(flags: Record<string, string | boolean>): { config: ServiceConfig; promptTemplate: string } {
