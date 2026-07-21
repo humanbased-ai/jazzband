@@ -126,6 +126,8 @@ export interface DeliveryConfig {
   remoteUrl: string | null;
   /** Shell command run in the workspace as a quality gate; a non-zero exit blocks the PR. */
   verify: string | null;
+  /** Shell command run after the PR opens (with $PR_URL set), e.g. `crosscheck run $PR_URL`. */
+  postPr: string | null;
 }
 
 /** Typed runtime view derived from WorkflowDefinition.config plus environment resolution. */

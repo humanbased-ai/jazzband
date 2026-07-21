@@ -64,6 +64,7 @@ export function makeAgentDispatcher(deps: DispatcherDeps): Dispatcher {
         repo: deps.config.delivery.repo,
         remoteUrl: deps.config.delivery.remoteUrl,
         verify: deps.config.delivery.verify,
+        postPr: deps.config.delivery.postPr,
         body: outcome.summary,
       });
       await deps.onPr?.(issue, result);

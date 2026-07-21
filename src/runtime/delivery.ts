@@ -45,6 +45,8 @@ export interface OpenPrOptions {
   verify?: string | null;
   /** PR body (the agent's evidence). Falls back to a minimal body when absent. */
   body?: string;
+  /** Command run after the PR opens (with $PR_URL set), e.g. a code-review tool. Best-effort. */
+  postPr?: string | null;
   exec?: Exec;
   timeoutMs?: number;
 }
@@ -103,5 +105,12 @@ export async function openPullRequest(options: OpenPrOptions): Promise<OpenPrRes
     "--title", title, "--body", body,
   ]);
 
-  return { opened: true, prUrl: pr.stdout.trim(), branch };
+  const prUrl = pr.stdout.trim();
+
+  // Optional post-PR hook (code review / delivery verification), best-effort.
+  if (options.postPr && options.postPr.trim() !== "") {
+    await exec("bash", ["-lc", `PR_URL=${JSON.stringify(prUrl)} ${options.postPr}`], at).catch(() => undefined);
+  }
+
+  return { opened: true, prUrl, branch };
 }

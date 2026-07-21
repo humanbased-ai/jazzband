@@ -352,15 +352,14 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 
   if (command === "watch") {
     try {
-      const { config, promptTemplate } = loadCliConfig(flags);
-      const client = new LinearClient(config.tracker);
-      const source = toSource(client, flags);
+      let { config, promptTemplate } = loadCliConfig(flags);
       const execute = Boolean(flags.execute);
-      if (execute) await startupCleanup(config, client);
+      if (execute) await startupCleanup(config, new LinearClient(config.tracker));
 
       const statusPort = Number(stringFlag(flags, "status-port"));
+      let store: StatusStore | undefined;
       if (Number.isInteger(statusPort) && statusPort > 0) {
-        const store = new StatusStore({
+        store = new StatusStore({
           startedAt: new Date().toISOString(),
           project: config.tracker.projectSlug ?? "?",
           mode: execute ? "execute" : "dry-run",
@@ -368,24 +367,25 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         serveStatus(store, statusPort);
         report = (text) => {
           console.log(text);
-          store.event(new Date().toISOString(), text);
+          store!.event(new Date().toISOString(), text);
         };
         console.error(`status: http://127.0.0.1:${statusPort}`);
-        for (;;) {
-          store.tick(new Date().toISOString());
-          await doTriage(config, source, execute, Boolean(flags.retriage), Boolean(flags.strict));
-          await doRun(config, promptTemplate, source, execute, true);
-          if (flags.once) return 0;
-          await sleep(config.polling.intervalMs);
-        }
       }
-
       console.error(`watch: ${config.tracker.projectSlug} every ${config.polling.intervalMs}ms${execute ? " (EXECUTE)" : " (dry-run)"}`);
+
       for (;;) {
+        store?.tick(new Date().toISOString());
+        const source = toSource(new LinearClient(config.tracker), flags);
         await doTriage(config, source, execute, Boolean(flags.retriage), Boolean(flags.strict));
-        await doRun(config, promptTemplate, source, execute, true); // work the fixable ones
+        await doRun(config, promptTemplate, source, execute, true);
         if (flags.once) return 0;
         await sleep(config.polling.intervalMs);
+        // Hot-reload config for the next tick (SPEC §6.2); keep last-good on a bad read.
+        try {
+          ({ config, promptTemplate } = loadCliConfig(flags));
+        } catch (error) {
+          console.error(`config reload failed, keeping last-good: ${(error as Error).message}`);
+        }
       }
     } catch (error) {
       const code = error instanceof JazzbandError ? error.code : "error";
