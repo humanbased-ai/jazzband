@@ -18,6 +18,8 @@ import { Runtime, run as runDelivery } from "../runtime/runtime.js";
 import { StatusStore, serveStatus } from "../runtime/status.js";
 import { chooseClassifier, fetchWithAutoStates, probeClaudeLoggedIn } from "../runtime/diagnostics.js";
 import { CostMeter } from "../runtime/cost.js";
+import { summarizeDelivery, type PrRow } from "../runtime/feedback.js";
+import { defaultExec } from "../runtime/delivery.js";
 import { ClaudeCliVerifier } from "../triage/claudeCliVerifier.js";
 import { planTriage } from "../triage/engine.js";
 import { applyTriage } from "../triage/executor.js";
@@ -31,9 +33,10 @@ Usage:
   jzb watch  --project <slug> [--interval 30s] [--limit N] [--status-port 7337] [--execute]
   jzb triage (--project <slug> | --workflow <path>) [--limit N] [--retriage] [--execute]
   jzb run    (--project <slug> | --workflow <path>) [--once] [--limit N] [--execute]
-  jzb labels (--project <slug> | --workflow <path>)
+  jzb labels   (--project <slug> | --workflow <path>)
+  jzb feedback (--repo <owner/repo> | --workflow <path>)   # PR merged/closed acceptance rate
   jzb check | poll [--project <slug> | --workflow <path>]
-  jzb --help
+  jzb --help   [--log-json for structured logs]
 
 Config comes from --workflow <path> OR --project <slug> (uses $LINEAR_API_KEY +
 the claude-cli classifier by default). Flags override the workflow.
@@ -50,6 +53,7 @@ Commands:
            --execute writes labels/comments (else dry-run).
   run      Work triage:fixable issues with a Claude coding agent; --execute launches agents.
   labels   Ensure the triage:* labels exist on the team.
+  feedback Report how jazzband's PRs fared: merged vs closed vs open + acceptance %.
   check    Resolve config + run dispatch preflight. poll: show one tick's dispatch decision.
 `;
 
@@ -289,6 +293,35 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return 0;
   }
 
+  // Structured logs for machine consumption / log pipelines.
+  if (flags["log-json"]) {
+    report = (text) => console.log(JSON.stringify({ ts: new Date().toISOString(), msg: text }));
+  }
+
+  if (command === "feedback") {
+    try {
+      const repo = stringFlag(flags, "repo") ?? loadCliConfig(flags).config.delivery.repo;
+      if (!repo) throw new JazzbandError("config_validation_error", "pass --repo <owner/repo> (or set delivery.repo in a --workflow)");
+      const r = await defaultExec(
+        "gh",
+        ["pr", "list", "--repo", repo, "--state", "all", "--limit", "200", "--json", "state,headRefName,title,url"],
+        { cwd: process.cwd(), timeoutMs: 30000 },
+      );
+      if (r.code !== 0) throw new Error(`gh pr list failed: ${r.stderr.trim().slice(0, 200)}`);
+      const summary = summarizeDelivery(JSON.parse(r.stdout) as PrRow[]);
+      console.log(
+        `Jazzband delivery: ${summary.merged} merged / ${summary.closed} closed / ${summary.open} open` +
+          (summary.acceptancePct != null ? ` — ${summary.acceptancePct}% accepted` : " — none resolved yet"),
+      );
+      for (const row of summary.rows) console.log(`  ${row.state.padEnd(6)} ${row.url ?? row.headRefName} ${row.title ?? ""}`);
+      return 0;
+    } catch (error) {
+      const code = error instanceof JazzbandError ? error.code : "error";
+      console.error(JSON.stringify({ ok: false, code, message: (error as Error).message }, null, 2));
+      return 1;
+    }
+  }
+
   if (command === "check") {
     const workflowPath = resolve(stringFlag(flags, "workflow") ?? "WORKFLOW.md");
     try {
@@ -395,6 +428,14 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         console.error(`status: http://127.0.0.1:${statusPort}`);
       }
       const classifier = await smartClassifier(config);
+      // Graceful shutdown: finish the current tick, then stop cleanly (SIGINT/SIGTERM).
+      let stopping = false;
+      const onSignal = () => {
+        stopping = true;
+        console.error("watch: shutdown signal received — finishing current tick, then stopping");
+      };
+      process.on("SIGINT", onSignal);
+      process.on("SIGTERM", onSignal);
       console.error(`watch: ${config.tracker.projectSlug} every ${config.polling.intervalMs}ms${execute ? " (EXECUTE)" : " (dry-run)"}`);
 
       for (;;) {
@@ -402,8 +443,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         const source = toSource(new LinearClient(config.tracker), flags);
         await doTriage(config, source, classifier, execute, Boolean(flags.retriage), Boolean(flags.strict));
         await doRun(config, promptTemplate, source, execute, true);
-        if (flags.once) return 0;
+        if (flags.once || stopping) return 0;
         await sleep(config.polling.intervalMs);
+        if (stopping) return 0;
         // Hot-reload config for the next tick (SPEC §6.2); keep last-good on a bad read.
         try {
           ({ config, promptTemplate } = loadCliConfig(flags));
