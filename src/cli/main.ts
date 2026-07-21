@@ -16,15 +16,17 @@ import { runLoop } from "../runtime/loop.js";
 import { makeAgentDispatcher } from "../runtime/dispatcher.js";
 import { Runtime, run as runDelivery } from "../runtime/runtime.js";
 import { StatusStore, serveStatus } from "../runtime/status.js";
-import { AnthropicClassifier } from "../triage/anthropicClassifier.js";
-import { ClaudeCliClassifier } from "../triage/claudeCliClassifier.js";
+import { chooseClassifier, fetchWithAutoStates, probeClaudeLoggedIn } from "../runtime/diagnostics.js";
 import { ClaudeCliVerifier } from "../triage/claudeCliVerifier.js";
 import { planTriage } from "../triage/engine.js";
 import { applyTriage } from "../triage/executor.js";
+import type { Classifier } from "../triage/types.js";
 
 const USAGE = `Jazzband — TypeScript orchestration for ticket-driven agent workflows
 
 Usage:
+  jzb go     --project <slug> [--execute]     # smart one-liner: auto auth + states + triage
+  jzb doctor --project <slug>                 # check auth / linear / gh / candidates
   jzb watch  --project <slug> [--interval 30s] [--limit N] [--status-port 7337] [--execute]
   jzb triage (--project <slug> | --workflow <path>) [--limit N] [--retriage] [--execute]
   jzb run    (--project <slug> | --workflow <path>) [--once] [--limit N] [--execute]
@@ -37,6 +39,9 @@ the claude-cli classifier by default). Flags override the workflow.
 Use --states "Backlog,Todo,In Progress" to set which issue states to watch.
 
 Commands:
+  go       Zero-config: auto-detect auth (claude login → API key → token), auto-widen states,
+           then triage. --execute writes. The "just do the right thing" command.
+  doctor   Health check: config, Linear reachability + candidate count, Claude auth backend, gh.
   watch    Continuously monitor a project: triage → work fixable, every --interval. The one-liner.
   triage   Classify + dedup + label bug reports; skips already-triaged (--retriage forces).
            --strict adds an adversarial second opinion on each fixable (demotes shaky ones).
@@ -164,14 +169,14 @@ async function startupCleanup(config: ServiceConfig, client: LinearClient): Prom
   return removed;
 }
 
-function makeClassifier(config: ServiceConfig) {
-  return config.classifier.runner === "claude-cli"
-    ? new ClaudeCliClassifier({ command: config.classifier.command, model: config.classifier.model })
-    : new AnthropicClassifier({
-        model: config.classifier.model,
-        apiKey: config.classifier.apiKey,
-        authToken: config.classifier.authToken,
-      });
+/** Auto-pick the classifier backend (probe claude login, then degrade through env creds). */
+async function smartClassifier(config: ServiceConfig): Promise<Classifier> {
+  const needsProbe =
+    config.classifier.runner === "claude-cli" && !config.classifier.apiKey && !config.classifier.authToken;
+  const claudeLoggedIn = needsProbe ? await probeClaudeLoggedIn(config.classifier.command) : false;
+  const { classifier, backend } = chooseClassifier(config, { claudeLoggedIn, env: process.env });
+  report(`auth: ${backend}`);
+  return classifier;
 }
 
 /** Sink for user-facing progress lines; the status server swaps this to also record events. */
@@ -181,6 +186,7 @@ let report: (text: string) => void = (text) => console.log(text);
 async function doTriage(
   config: ServiceConfig,
   source: RuntimeSource,
+  classifier: Classifier,
   execute: boolean,
   retriage = false,
   strict = false,
@@ -198,7 +204,7 @@ async function doTriage(
   const verifier = strict
     ? new ClaudeCliVerifier({ command: config.classifier.command, model: config.classifier.model })
     : undefined;
-  const plan = await planTriage(issues, makeClassifier(config), verifier);
+  const plan = await planTriage(issues, classifier, verifier);
   for (const d of plan.decisions) {
     const dup = d.duplicateOf ? ` → dup of ${d.duplicateOf}` : "";
     report(`triage ${d.issue.identifier} ${d.verdict}${dup} :: ${d.labels.join(", ")}`);
@@ -327,7 +333,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     try {
       const { config } = loadCliConfig(flags);
       const source = toSource(new LinearClient(config.tracker), flags);
-      await doTriage(config, source, Boolean(flags.execute), Boolean(flags.retriage), Boolean(flags.strict));
+      const classifier = await smartClassifier(config);
+      await doTriage(config, source, classifier, Boolean(flags.execute), Boolean(flags.retriage), Boolean(flags.strict));
       return 0;
     } catch (error) {
       const code = error instanceof JazzbandError ? error.code : "error";
@@ -371,12 +378,13 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         };
         console.error(`status: http://127.0.0.1:${statusPort}`);
       }
+      const classifier = await smartClassifier(config);
       console.error(`watch: ${config.tracker.projectSlug} every ${config.polling.intervalMs}ms${execute ? " (EXECUTE)" : " (dry-run)"}`);
 
       for (;;) {
         store?.tick(new Date().toISOString());
         const source = toSource(new LinearClient(config.tracker), flags);
-        await doTriage(config, source, execute, Boolean(flags.retriage), Boolean(flags.strict));
+        await doTriage(config, source, classifier, execute, Boolean(flags.retriage), Boolean(flags.strict));
         await doRun(config, promptTemplate, source, execute, true);
         if (flags.once) return 0;
         await sleep(config.polling.intervalMs);
@@ -402,6 +410,77 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         const id = await writer.ensureLabelId(name);
         console.log(`${name} → ${id}`);
       }
+      return 0;
+    } catch (error) {
+      const code = error instanceof JazzbandError ? error.code : "error";
+      console.error(JSON.stringify({ ok: false, code, message: (error as Error).message }, null, 2));
+      return 1;
+    }
+  }
+
+  if (command === "doctor") {
+    const line = (ok: boolean, name: string, detail: string) => console.log(`${ok ? "✅" : "❌"} ${name}: ${detail}`);
+    let allOk = true;
+    let config: ServiceConfig;
+    try {
+      config = loadCliConfig(flags).config;
+      line(true, "config", `project ${config.tracker.projectSlug}`);
+    } catch (error) {
+      line(false, "config", (error as Error).message);
+      return 1;
+    }
+    // Linear reachability + candidate count (auto-widening states).
+    try {
+      const client = new LinearClient(config.tracker);
+      const found = await fetchWithAutoStates(
+        (states) => new LinearClient({ ...config.tracker, activeStates: states }).fetchCandidateIssues(),
+        config.tracker.activeStates,
+      );
+      void client;
+      line(true, "linear", `reachable; ${found.issues.length} candidate(s) in [${found.states.join(", ")}]${found.widened ? " (auto-widened)" : ""}`);
+      if (found.issues.length === 0) allOk = false;
+    } catch (error) {
+      allOk = false;
+      line(false, "linear", (error as Error).message);
+    }
+    // Claude auth backend (graceful).
+    try {
+      const loggedIn = config.classifier.runner === "claude-cli" && !config.classifier.apiKey && !config.classifier.authToken
+        ? await probeClaudeLoggedIn(config.classifier.command)
+        : false;
+      const { backend } = chooseClassifier(config, { claudeLoggedIn: loggedIn, env: process.env });
+      line(true, "auth", backend);
+    } catch (error) {
+      allOk = false;
+      line(false, "auth", (error as Error).message);
+    }
+    // gh (needed for run --execute to open PRs).
+    try {
+      const { defaultExec } = await import("../runtime/delivery.js");
+      const gh = await defaultExec("gh", ["auth", "status"], { cwd: process.cwd(), timeoutMs: 15000 });
+      line(gh.code === 0, "gh", gh.code === 0 ? "authenticated (PRs OK)" : "not authenticated — `gh auth login` needed for run --execute");
+    } catch {
+      line(false, "gh", "gh CLI not found — needed for run --execute");
+    }
+    console.log(allOk ? "\nReady. Try: jzb go --project " + config.tracker.projectSlug : "\nSome checks failed — fix the ❌ above.");
+    return allOk ? 0 : 1;
+  }
+
+  if (command === "go") {
+    try {
+      const { config } = loadCliConfig(flags);
+      const classifier = await smartClassifier(config);
+      const widened = await fetchWithAutoStates(
+        (states) => new LinearClient({ ...config.tracker, activeStates: states }).fetchCandidateIssues(),
+        config.tracker.activeStates,
+      );
+      if (widened.widened) report(`go: no issues in configured states — widened to [${widened.states.join(", ")}]`);
+      const source: RuntimeSource = {
+        fetchCandidateIssues: async () => widened.issues,
+        fetchIssueStatesByIds: (ids) => new LinearClient(config.tracker).fetchIssueStatesByIds(ids),
+      };
+      await doTriage(config, source, classifier, Boolean(flags.execute), Boolean(flags.retriage), Boolean(flags.strict));
+      if (!flags.execute) report("go: dry-run. Add --execute to write labels, then `jzb run --execute` to auto-fix.");
       return 0;
     } catch (error) {
       const code = error instanceof JazzbandError ? error.code : "error";
