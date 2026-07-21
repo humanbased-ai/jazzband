@@ -22,13 +22,16 @@ function issue(): Issue {
 }
 
 /** Fake exec: records calls; `porcelain` controls the git status output; gh returns a PR url. */
-function fakeExec(porcelain: string): { exec: Exec; calls: string[][] } {
+function fakeExec(porcelain: string, opts: { names?: string; diff?: string; existingPr?: string } = {}): { exec: Exec; calls: string[][] } {
   const calls: string[][] = [];
   const exec: Exec = async (command, args) => {
     calls.push([command, ...args]);
     const out = (stdout = ""): ExecResult => ({ code: 0, stdout, stderr: "" });
     if (command === "git" && args[0] === "status") return out(porcelain);
-    if (command === "gh") return out("https://github.com/humanbased-ai/monorepo/pull/1420\n");
+    if (command === "git" && args[0] === "diff" && args.includes("--name-only")) return out(opts.names ?? "");
+    if (command === "git" && args[0] === "diff") return out(opts.diff ?? "");
+    if (command === "gh" && args.includes("list")) return out(opts.existingPr ?? ""); // idempotency probe
+    if (command === "gh") return out("https://github.com/humanbased-ai/monorepo/pull/1420\n"); // pr create
     return out();
   };
   return { exec, calls };
@@ -52,23 +55,38 @@ test("opens a PR: branch, commit, push, gh pr create — returns the URL", async
     branch: "fix/in-2069-jazzband",
   });
   const verbs = calls.map((c) => `${c[0]} ${c[1]}`);
-  assert.deepEqual(verbs, [
-    "git status",
-    "git checkout",
-    "git add",
-    "git commit",
-    "git remote",
-    "git push",
-    "gh pr",
-  ]);
-  const gh = calls.find((c) => c[0] === "gh")!;
+  for (const step of ["git checkout", "git add", "git commit", "git push"]) {
+    assert.ok(verbs.includes(step), `expected ${step}`);
+  }
+  const gh = calls.find((c) => c[0] === "gh" && c.includes("create"))!;
   assert.ok(gh.includes("--repo") && gh.includes("humanbased-ai/monorepo") && gh.includes("staging"));
+});
+
+test("idempotency: skips when an open PR already exists for the branch", async () => {
+  const { exec } = fakeExec(" M x.tsx\n", { existingPr: "https://github.com/o/r/pull/99\n" });
+  const result = await openPullRequest({ ...OPTS, exec });
+  assert.equal(result.opened, false);
+  assert.match((result as { reason: string }).reason, /already open.*pull\/99/);
+});
+
+test("guardrails block forbidden paths, oversized diffs, and secrets", async () => {
+  const forbidden = fakeExec(" M x\n", { names: "backend/.env\nsrc/a.ts\n" });
+  const r1 = await openPullRequest({ ...OPTS, exec: forbidden.exec, forbiddenPaths: [".env"] });
+  assert.match((r1 as { reason: string }).reason, /forbidden path.*\.env/);
+
+  const big = fakeExec(" M x\n", { names: "a.ts\n", diff: Array.from({ length: 30 }, (_, i) => `+line ${i}`).join("\n") });
+  const r2 = await openPullRequest({ ...OPTS, exec: big.exec, maxDiffLines: 10 });
+  assert.match((r2 as { reason: string }).reason, /exceeds max 10/);
+
+  const secret = fakeExec(" M x\n", { names: "a.ts\n", diff: "+const k = 'sk-ant-abcdefghijklmnop'" });
+  const r3 = await openPullRequest({ ...OPTS, exec: secret.exec, secretScan: true });
+  assert.match((r3 as { reason: string }).reason, /secret/);
 });
 
 test("the agent's summary becomes the PR body", async () => {
   const { exec, calls } = fakeExec(" M x.tsx\n");
   await openPullRequest({ ...OPTS, exec, body: "## What was wrong\nThe Watch toggle rolled back." });
-  const gh = calls.find((c) => c[0] === "gh")!;
+  const gh = calls.find((c) => c[0] === "gh" && c.includes("create"))!;
   const bodyIdx = gh.indexOf("--body");
   assert.match(gh[bodyIdx + 1]!, /What was wrong[\s\S]*Watch toggle rolled back/);
   assert.match(gh[bodyIdx + 1]!, /Opened by Jazzband/); // footer preserved

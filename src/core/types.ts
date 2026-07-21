@@ -128,6 +128,14 @@ export interface DeliveryConfig {
   verify: string | null;
   /** Shell command run after the PR opens (with $PR_URL set), e.g. `crosscheck run $PR_URL`. */
   postPr: string | null;
+  /** Blast-radius cap: block the PR if more than this many files changed (0 = no limit). */
+  maxFiles: number;
+  /** Blast-radius cap: block if the diff adds+removes more than this many lines (0 = no limit). */
+  maxDiffLines: number;
+  /** Glob-ish substrings; a changed path containing any of these blocks the PR (defense in depth). */
+  forbiddenPaths: string[];
+  /** Scan the diff for obvious secrets and block the PR if any are found. */
+  secretScan: boolean;
 }
 
 /** Typed runtime view derived from WorkflowDefinition.config plus environment resolution. */

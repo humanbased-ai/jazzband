@@ -47,9 +47,22 @@ export interface OpenPrOptions {
   body?: string;
   /** Command run after the PR opens (with $PR_URL set), e.g. a code-review tool. Best-effort. */
   postPr?: string | null;
+  /** Blast-radius + secret guardrails (defense in depth). */
+  maxFiles?: number;
+  maxDiffLines?: number;
+  forbiddenPaths?: string[];
+  secretScan?: boolean;
   exec?: Exec;
   timeoutMs?: number;
 }
+
+const SECRET_PATTERNS: RegExp[] = [
+  /sk-ant-[A-Za-z0-9-]{8,}/, // Anthropic keys/tokens
+  /AKIA[0-9A-Z]{16}/, // AWS access key id
+  /gh[pousr]_[A-Za-z0-9]{20,}/, // GitHub tokens
+  /xox[baprs]-[A-Za-z0-9-]{10,}/, // Slack tokens
+  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/, // private keys
+];
 
 export type OpenPrResult = { opened: true; prUrl: string; branch: string } | { opened: false; reason: string };
 
@@ -73,6 +86,41 @@ export async function openPullRequest(options: OpenPrOptions): Promise<OpenPrRes
   const status = await exec("git", ["status", "--porcelain"], at);
   if (status.stdout.trim() === "") {
     return { opened: false, reason: "agent made no changes" };
+  }
+
+  // Idempotency: never open a second PR for the same issue (SRE exactly-once).
+  const existing = await exec(
+    "gh",
+    ["pr", "list", "--repo", options.repo, "--head", branch, "--state", "open", "--json", "url", "-q", ".[0].url"],
+    at,
+  );
+  if (existing.code === 0 && existing.stdout.trim() !== "") {
+    return { opened: false, reason: `PR already open: ${existing.stdout.trim()}` };
+  }
+
+  // Blast-radius + secret guardrails (defense in depth — don't trust the classifier alone).
+  const changed = (await exec("git", ["diff", "--name-only", "HEAD"], at)).stdout
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const forbidden = options.forbiddenPaths ?? [];
+  const hit = changed.find((f) => forbidden.some((p) => f.includes(p)));
+  if (hit) return { opened: false, reason: `blocked: change touches forbidden path (${hit})` };
+  if (options.maxFiles && options.maxFiles > 0 && changed.length > options.maxFiles) {
+    return { opened: false, reason: `blocked: ${changed.length} files changed exceeds max ${options.maxFiles}` };
+  }
+  const diff = await exec("git", ["diff", "HEAD"], at);
+  if (options.maxDiffLines && options.maxDiffLines > 0) {
+    const churn = diff.stdout.split("\n").filter((l) => /^[+-]/.test(l) && !/^[+-]{3} /.test(l)).length;
+    if (churn > options.maxDiffLines) {
+      return { opened: false, reason: `blocked: diff of ${churn} lines exceeds max ${options.maxDiffLines}` };
+    }
+  }
+  if (options.secretScan !== false) {
+    const added = diff.stdout.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++"));
+    if (added.some((l) => SECRET_PATTERNS.some((re) => re.test(l)))) {
+      return { opened: false, reason: "blocked: the diff appears to contain a secret" };
+    }
   }
 
   // Quality gate: don't open a PR whose change doesn't pass the configured check.

@@ -65,6 +65,10 @@ export function makeAgentDispatcher(deps: DispatcherDeps): Dispatcher {
         remoteUrl: deps.config.delivery.remoteUrl,
         verify: deps.config.delivery.verify,
         postPr: deps.config.delivery.postPr,
+        maxFiles: deps.config.delivery.maxFiles,
+        maxDiffLines: deps.config.delivery.maxDiffLines,
+        forbiddenPaths: deps.config.delivery.forbiddenPaths,
+        secretScan: deps.config.delivery.secretScan,
         body: outcome.summary,
       });
       await deps.onPr?.(issue, result);

@@ -158,11 +158,19 @@ function resolveCodex(raw: RawConfig): CodexConfig {
 function resolveDelivery(raw: RawConfig): ServiceConfig["delivery"] {
   const repo = optString(raw.repo, "delivery.repo");
   const remoteUrl = optString(raw.remote_url, "delivery.remote_url") ?? (repo ? `https://github.com/${repo}.git` : null);
+  const forbidden = raw.forbidden_paths;
   return {
     repo,
     remoteUrl,
     verify: optString(raw.verify, "delivery.verify"),
     postPr: optString(raw.post_pr, "delivery.post_pr"),
+    maxFiles: optInt(raw.max_files, "delivery.max_files", 40),
+    maxDiffLines: optInt(raw.max_diff_lines, "delivery.max_diff_lines", 1000),
+    forbiddenPaths:
+      forbidden === undefined || forbidden === null
+        ? [".env", "secret", "credential", ".pem", ".key", "/migrations/", "/infra/"]
+        : stringList(forbidden, "delivery.forbidden_paths", []),
+    secretScan: raw.secret_scan === undefined || raw.secret_scan === null ? true : raw.secret_scan !== false,
   };
 }
 
