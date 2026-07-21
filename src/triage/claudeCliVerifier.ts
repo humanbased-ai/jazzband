@@ -20,6 +20,7 @@ export interface ClaudeCliVerifierOptions {
   model?: string;
   timeoutMs?: number;
   spawnAgent?: SpawnAgent;
+  onCost?: (usd: number | undefined) => void;
 }
 
 /** Adversarial verifier over the logged-in `claude` CLI. On any error, fail safe (safe=false). */
@@ -28,12 +29,14 @@ export class ClaudeCliVerifier implements Verifier {
   private readonly model: string;
   private readonly timeoutMs: number;
   private readonly spawnAgent: SpawnAgent;
+  private readonly onCost?: (usd: number | undefined) => void;
 
   constructor(options: ClaudeCliVerifierOptions = {}) {
     this.command = options.command ?? "claude";
     this.model = options.model ?? "claude-opus-4-8";
     this.timeoutMs = options.timeoutMs ?? 120000;
     this.spawnAgent = options.spawnAgent ?? spawnClaude;
+    this.onCost = options.onCost;
   }
 
   async verify(issue: Issue, classification: Classification): Promise<VerifyResult> {
@@ -45,7 +48,8 @@ export class ClaudeCliVerifier implements Verifier {
         { cwd: tmpdir(), timeoutMs: this.timeoutMs },
       );
       if (result.timedOut || result.code !== 0) return { safe: false, reason: "verifier run failed" };
-      const envelope = JSON.parse(result.stdout) as { is_error?: boolean; result?: string };
+      const envelope = JSON.parse(result.stdout) as { is_error?: boolean; result?: string; total_cost_usd?: number };
+      this.onCost?.(envelope.total_cost_usd);
       if (envelope.is_error || typeof envelope.result !== "string") return { safe: false, reason: "verifier returned an error" };
       const fields = extractJson(envelope.result);
       return { safe: fields.safe === true, reason: String(fields.reason ?? "") };

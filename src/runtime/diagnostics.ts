@@ -31,10 +31,14 @@ export interface ClassifierChoice {
  * explicit config key/token → then a logged-in `claude` CLI → then env ANTHROPIC_API_KEY /
  * CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_AUTH_TOKEN. If nothing works, throw with clear guidance.
  */
-export function chooseClassifier(config: ServiceConfig, opts: { claudeLoggedIn: boolean; env: AuthEnv }): ClassifierChoice {
-  const { env } = opts;
+export function chooseClassifier(
+  config: ServiceConfig,
+  opts: { claudeLoggedIn: boolean; env: AuthEnv; onCost?: (usd: number | undefined) => void },
+): ClassifierChoice {
+  const { env, onCost } = opts;
   const model = config.classifier.model;
   const command = config.classifier.command;
+  const cli = () => new ClaudeCliClassifier({ command, model, onCost });
 
   if (config.classifier.apiKey) {
     return { classifier: new AnthropicClassifier({ model, apiKey: config.classifier.apiKey }), backend: "api-key (config)" };
@@ -48,8 +52,8 @@ export function chooseClassifier(config: ServiceConfig, opts: { claudeLoggedIn: 
   }
 
   // Default runner "claude-cli": prefer the logged-in CLI, then degrade to env credentials.
-  if (opts.claudeLoggedIn) return { classifier: new ClaudeCliClassifier({ command, model }), backend: "claude-cli (logged in)" };
-  if (env.CLAUDE_CODE_OAUTH_TOKEN) return { classifier: new ClaudeCliClassifier({ command, model }), backend: "claude-cli (CLAUDE_CODE_OAUTH_TOKEN)" };
+  if (opts.claudeLoggedIn) return { classifier: cli(), backend: "claude-cli (logged in)" };
+  if (env.CLAUDE_CODE_OAUTH_TOKEN) return { classifier: cli(), backend: "claude-cli (CLAUDE_CODE_OAUTH_TOKEN)" };
   if (env.ANTHROPIC_API_KEY) return { classifier: new AnthropicClassifier({ model }), backend: "api-key (env, claude not logged in)" };
   if (env.ANTHROPIC_AUTH_TOKEN) return { classifier: new AnthropicClassifier({ model, authToken: env.ANTHROPIC_AUTH_TOKEN }), backend: "auth-token (env)" };
   throw noAuthError();

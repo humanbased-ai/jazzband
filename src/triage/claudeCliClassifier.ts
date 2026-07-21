@@ -35,6 +35,8 @@ export interface ClaudeCliClassifierOptions {
   model?: string;
   timeoutMs?: number;
   spawnAgent?: SpawnAgent;
+  /** Reports the USD cost of each classify call (from the CLI's total_cost_usd). */
+  onCost?: (usd: number | undefined) => void;
 }
 
 /**
@@ -46,12 +48,14 @@ export class ClaudeCliClassifier implements Classifier {
   private readonly model: string;
   private readonly timeoutMs: number;
   private readonly spawnAgent: SpawnAgent;
+  private readonly onCost?: (usd: number | undefined) => void;
 
   constructor(options: ClaudeCliClassifierOptions = {}) {
     this.command = options.command ?? "claude";
     this.model = options.model ?? "claude-opus-4-8";
     this.timeoutMs = options.timeoutMs ?? 120000;
     this.spawnAgent = options.spawnAgent ?? spawnClaude;
+    this.onCost = options.onCost;
   }
 
   async classify(issue: Issue): Promise<Classification> {
@@ -65,7 +69,8 @@ export class ClaudeCliClassifier implements Classifier {
       throw new Error(`claude CLI classify failed for ${issue.identifier} (code=${result.code}, timedOut=${result.timedOut})`);
     }
 
-    const envelope = JSON.parse(result.stdout) as { is_error?: boolean; result?: string };
+    const envelope = JSON.parse(result.stdout) as { is_error?: boolean; result?: string; total_cost_usd?: number };
+    this.onCost?.(envelope.total_cost_usd);
     if (envelope.is_error || typeof envelope.result !== "string") {
       throw new Error(`claude CLI returned an error for ${issue.identifier}`);
     }

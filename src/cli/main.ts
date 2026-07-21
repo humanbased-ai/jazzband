@@ -17,6 +17,7 @@ import { makeAgentDispatcher } from "../runtime/dispatcher.js";
 import { Runtime, run as runDelivery } from "../runtime/runtime.js";
 import { StatusStore, serveStatus } from "../runtime/status.js";
 import { chooseClassifier, fetchWithAutoStates, probeClaudeLoggedIn } from "../runtime/diagnostics.js";
+import { CostMeter } from "../runtime/cost.js";
 import { ClaudeCliVerifier } from "../triage/claudeCliVerifier.js";
 import { planTriage } from "../triage/engine.js";
 import { applyTriage } from "../triage/executor.js";
@@ -37,6 +38,7 @@ Usage:
 Config comes from --workflow <path> OR --project <slug> (uses $LINEAR_API_KEY +
 the claude-cli classifier by default). Flags override the workflow.
 Use --states "Backlog,Todo,In Progress" to set which issue states to watch.
+Use --budget 2.5 (USD) to cap spend; jazzband stops launching agents once reached.
 
 Commands:
   go       Zero-config: auto-detect auth (claude login → API key → token), auto-widen states,
@@ -127,6 +129,8 @@ function loadCliConfig(flags: Record<string, string | boolean>): { config: Servi
   if (interval) config.polling.intervalMs = parseInterval(interval, config.polling.intervalMs);
   const states = stringFlag(flags, "states");
   if (states) config.tracker.activeStates = states.split(",").map((s) => s.trim()).filter(Boolean);
+  const budget = Number(stringFlag(flags, "budget"));
+  if (Number.isFinite(budget) && budget > 0) config.budgetUsd = budget;
   return { config, promptTemplate };
 }
 
@@ -171,16 +175,21 @@ async function startupCleanup(config: ServiceConfig, client: LinearClient): Prom
 
 /** Auto-pick the classifier backend (probe claude login, then degrade through env creds). */
 async function smartClassifier(config: ServiceConfig): Promise<Classifier> {
+  costMeter = new CostMeter(config.budgetUsd);
   const needsProbe =
     config.classifier.runner === "claude-cli" && !config.classifier.apiKey && !config.classifier.authToken;
   const claudeLoggedIn = needsProbe ? await probeClaudeLoggedIn(config.classifier.command) : false;
-  const { classifier, backend } = chooseClassifier(config, { claudeLoggedIn, env: process.env });
+  const { classifier, backend } = chooseClassifier(config, { claudeLoggedIn, env: process.env, onCost });
   report(`auth: ${backend}`);
   return classifier;
 }
 
 /** Sink for user-facing progress lines; the status server swaps this to also record events. */
 let report: (text: string) => void = (text) => console.log(text);
+
+/** Shared USD meter for the current command; onCost feeds every Claude call into it. */
+let costMeter = new CostMeter();
+const onCost = (usd: number | undefined): void => costMeter.add(usd);
 
 /** Classify + (optionally) label the project's candidates. */
 async function doTriage(
@@ -202,13 +211,14 @@ async function doTriage(
     return;
   }
   const verifier = strict
-    ? new ClaudeCliVerifier({ command: config.classifier.command, model: config.classifier.model })
+    ? new ClaudeCliVerifier({ command: config.classifier.command, model: config.classifier.model, onCost })
     : undefined;
   const plan = await planTriage(issues, classifier, verifier);
   for (const d of plan.decisions) {
     const dup = d.duplicateOf ? ` → dup of ${d.duplicateOf}` : "";
     report(`triage ${d.issue.identifier} ${d.verdict}${dup} :: ${d.labels.join(", ")}`);
   }
+  report(`triage: cost ${costMeter.summary()}`);
   if (execute) {
     const result = await applyTriage(plan, new LinearWriteClient(config.tracker));
     report(`triage applied: labeled ${result.labeled}`);
@@ -233,11 +243,15 @@ async function doRun(
     return;
   }
   const worker = async (issue: Issue) => {
+    if (costMeter.overBudget()) {
+      report(`run ${issue.identifier}: skipped — budget reached (${costMeter.summary()})`);
+      return { ok: false };
+    }
     let ok = false;
     await makeAgentDispatcher({
       config,
       promptTemplate,
-      makeClient: () => new ClaudeAgentClient({ turnTimeoutMs: config.codex.turnTimeoutMs }),
+      makeClient: () => new ClaudeAgentClient({ turnTimeoutMs: config.codex.turnTimeoutMs, onCost }),
       onOutcome: (i, outcome) => {
         ok = outcome.ok;
         report(`run ${i.identifier}: agent ${outcome.ok ? "succeeded" : "failed"} (${outcome.turns} turn(s))`);
@@ -262,6 +276,7 @@ async function doRun(
     return { ok };
   };
   await runDelivery({ config, source, worker, now: () => Date.now(), log: (m) => console.error(m) }, { once });
+  report(`run: cost ${costMeter.summary()}`);
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -346,6 +361,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (command === "run") {
     try {
       const { config, promptTemplate } = loadCliConfig(flags);
+      costMeter = new CostMeter(config.budgetUsd);
       const client = new LinearClient(config.tracker);
       if (flags.execute) await startupCleanup(config, client);
       await doRun(config, promptTemplate, toSource(client, flags), Boolean(flags.execute), Boolean(flags.once));

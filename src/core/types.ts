@@ -148,4 +148,6 @@ export interface ServiceConfig {
   codex: CodexConfig;
   classifier: ClassifierConfig;
   delivery: DeliveryConfig;
+  /** USD spend cap per run (0 = no cap); enforced against the Claude CLI's reported cost. */
+  budgetUsd: number;
 }

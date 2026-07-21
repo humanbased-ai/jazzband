@@ -45,6 +45,8 @@ export interface ClaudeAgentOptions {
   permissionMode?: string;
   turnTimeoutMs?: number;
   spawnAgent?: SpawnAgent;
+  /** Reports the USD cost of each turn (from the CLI's total_cost_usd). */
+  onCost?: (usd: number | undefined) => void;
 }
 
 interface ClaudeResult {
@@ -52,6 +54,7 @@ interface ClaudeResult {
   session_id?: string;
   subtype?: string;
   result?: string;
+  total_cost_usd?: number;
 }
 
 /**
@@ -65,6 +68,7 @@ export class ClaudeAgentClient implements AppServerClient {
   private readonly permissionMode: string;
   private readonly turnTimeoutMs: number;
   private readonly spawnAgent: SpawnAgent;
+  private readonly onCost?: (usd: number | undefined) => void;
   private cwd = "";
   private sessionId: string | null = null;
   private lastSummary = "";
@@ -75,6 +79,7 @@ export class ClaudeAgentClient implements AppServerClient {
     this.permissionMode = options.permissionMode ?? "acceptEdits";
     this.turnTimeoutMs = options.turnTimeoutMs ?? 3600000;
     this.spawnAgent = options.spawnAgent ?? spawnClaude;
+    this.onCost = options.onCost;
   }
 
   async start(options: { cwd: string; issue: Issue }): Promise<StartResult> {
@@ -101,6 +106,7 @@ export class ClaudeAgentClient implements AppServerClient {
     }
     if (parsed?.session_id) this.sessionId = parsed.session_id;
     if (typeof parsed?.result === "string" && parsed.result.trim() !== "") this.lastSummary = parsed.result;
+    this.onCost?.(parsed?.total_cost_usd);
 
     if (result.code !== 0) return "failed";
     if (parsed?.is_error) return "failed";

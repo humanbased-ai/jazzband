@@ -229,6 +229,7 @@ export function resolveConfig(rawConfig: RawConfig, options: ResolveConfigOption
     codex: resolveCodex(codexRaw),
     classifier: resolveClassifier(classifierRaw, env),
     delivery: resolveDelivery(asObject(rawConfig.delivery, "delivery")),
+    budgetUsd: typeof rawConfig.budget_usd === "number" && rawConfig.budget_usd > 0 ? rawConfig.budget_usd : 0,
   };
 }
 
