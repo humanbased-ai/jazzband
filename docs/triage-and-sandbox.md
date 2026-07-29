@@ -79,7 +79,8 @@ A **dry-run shadow period** (log decisions, take no action) precedes enabling `-
 ### 3.4 Stale-claim takeover
 
 Separately, scan active issues (Todo / In Progress) assigned to a human where
-`now − updatedAt > staleClaimHours (=5)` **AND** there is no linked PR **AND** no active agent run.
+`now − updatedAt > staleClaimHours (=5)` **AND** there is no linked PR **AND** no active agent run
+(where "active" is tracked in the `.jazzband/runs/` state store — see `TrackerPort.activeRunId`).
 `updatedAt` is the issue's last state-change or assignment timestamp, not the creation time — a human
 claim made seconds ago has a fresh `updatedAt` and is never displaced before the window expires.
 On match: comment, reassign to the agent identity, ensure `Todo`. The "no linked PR + no active run"
@@ -107,13 +108,18 @@ permissions in a **throwaway container**, not on the host.
 
 - **Image** `jazzband-agent:<tag>`: Node + the agent CLIs (`claude`, `codex`) + `git` + `gh`.
 - **No host bind mount** of the workspace — the entrypoint clones the repo fresh *inside* the container.
-- **Auth**: the agent's subscription credentials are the one deliberate secret crossing the boundary,
-  mounted **read-only** (`~/.claude → /root/.claude:ro`). This is the trust boundary — see Risks.
+- **Auth**: the agent's subscription credentials **never enter the container filesystem**. A read-only
+  mount is explicitly rejected — read-only blocks writes, not reads, and `api.anthropic.com` is on the
+  egress allowlist, so a malicious repo could read a mounted credential and abuse it through the
+  approved channel. Instead the egress proxy (below) terminates the provider connection and **injects
+  the auth header** server-side; where a CLI cannot be pointed at a proxy, fall back to **short-lived,
+  per-run credentials** minted before the run and revoked at teardown. This is the trust boundary — see Risks.
 - **Scoped env**: a fine-grained, repo-scoped `GITHUB_TOKEN` and `LINEAR_API_KEY`, nothing else.
 - **Egress allowlist**: only `api.github.com`, `github.com`, `api.linear.app`, `api.anthropic.com`
   (+ Codex/OpenRouter hosts as needed). Docker has no native per-host egress allowlist, so the
   recommended approach is a sidecar forward-proxy (tinyproxy/squid allowlist) on a private bridge with
-  the agent container on `--network` pointed at it; `--network none` + proxy is the strict variant.
+  the agent container on `--network` pointed at it; `--network none` + proxy is the strict variant. The
+  same proxy injects the provider auth header (see Auth), so credentials never reside inside the container.
 - **Resource caps**: `--cpus`, `--memory`, `--pids-limit`, a wall-clock `timeoutMs`, and an agent
   budget cap (`claude --max-budget-usd`, mirroring Crosscheck).
 - **Ephemeral**: `--rm`; the container and its clone are destroyed after the run. Logs stream to
@@ -123,17 +129,17 @@ permissions in a **throwaway container**, not on the host.
 
 ```
 docker run --rm \
-  --network jazzband-egress           # private bridge → allowlist proxy \
+  --network jazzband-egress           # private bridge → allowlist proxy (injects provider auth) \
   --cpus 2 --memory 4g --pids-limit 512 \
-  -v ~/.claude:/root/.claude:ro       # subscription auth, read-only \
-  -e GITHUB_TOKEN -e LINEAR_API_KEY \
+  -e GITHUB_TOKEN -e LINEAR_API_KEY   # no subscription-auth mount — the proxy injects it \
   jazzband-agent:<tag> \
   jzb-agent-entry --ticket IN-123 --repo humanbased-ai/monorepo --agent claude_code --max-turns 60
 ```
 
 The entrypoint mirrors today's Symphony WORKFLOW.md prompt (clone → branch/checkout existing PR →
 TDD → quality gate → push → `gh pr create` → comment ticket → move *In Review*). That prompt is
-reused, not reinvented.
+reused, not reinvented. On exit it writes a structured result artifact (`runId`, `prUrl`, `sessionId`,
+`exitCode`) that the host reads directly, rather than parsing free-form stdout for the PR URL.
 
 ## 5. Proposed contracts
 
@@ -147,7 +153,7 @@ export interface TriageCandidate {
 }
 export type TriageClass = "code_fixable" | "operational" | "needs_human";
 export interface TriageAssessment {
-  class: TriageClass; category: string; confidence: number; // 0..1
+  class: TriageClass; category: string; confidence: number; // 0..1 — validated/clamped at the ClassifierPort boundary
   proposedApproach: string; rationale: string;
 }
 export interface TriagePolicy {
@@ -169,6 +175,8 @@ export interface AgentRunRequest {
   model?: string; maxTurns: number; timeoutMs: number; budgetUsd?: number;
   env: Record<string, string>;
 }
+// `prUrl`/`sessionId` are read from a structured result artifact the entrypoint writes on exit
+// (a known JSON line / result file), never by scraping free-form container stdout.
 export interface AgentRunResult {
   runId: string; exitCode: number; durationMs: number;
   prUrl: string | null; sessionId: string | null; logPath: string;
@@ -179,11 +187,14 @@ export type Verdict = "APPROVE" | "NEEDS_WORK" | "BLOCK" | "PENDING";
 export interface ReviewState { prUrl: string; headSha: string; verdict: Verdict; commitCount: number; }
 export interface VerificationResult { prUrl: string; headSha: string; passed: boolean; evidenceUrl?: string; }
 
-// ---- Run state (extends WorkflowPlan) ----
-export interface WorkflowRun {
-  runId: string; target: WorkflowTarget; phase: WorkflowPhase;
+// ---- Run state ----
+// `WorkflowTarget`, `WorkflowPhase`, and `WorkflowPlan` are existing types already defined in
+// `src/core/types.ts` (`WorkflowPlan` carries `target`, `phase`, `steps`, `dryRun`). `WorkflowRun`
+// is the one new type here; it extends `WorkflowPlan` and adds the live execution state below.
+export interface WorkflowRun extends WorkflowPlan {
+  runId: string;
   agentRun?: AgentRunResult; review?: ReviewState; verification?: VerificationResult;
-  startedAt: string; updatedAt: string; dryRun: boolean;
+  startedAt: string; updatedAt: string;
 }
 ```
 
@@ -193,30 +204,44 @@ export interface TrackerPort {
   listBacklog(filter: { titlePattern?: RegExp; label?: string }): Promise<TriageCandidate[]>;
   listActive(): Promise<TriageCandidate[]>;
   linkedPrUrl(issueId: string): Promise<string | null>;
-  /** Returns the runId of any agent run currently working this issue, or null if none. */
+  /**
+   * Returns the runId of any agent run currently working this issue, or null if none.
+   * "Active run" is NOT a Linear/GitHub native concept: it is tracked in the `.jazzband/runs/`
+   * run-state store (see Design principles). An issue is active when a persisted `WorkflowRun`
+   * references its `issueId` in a non-terminal `phase` (anything before `ready_to_merge`); that
+   * store is the single source of truth the stale-claim guard consults.
+   */
   activeRunId(issueId: string): Promise<string | null>;
   promote(issueId: string, toState: string, assigneeId: string): Promise<void>;
   assign(issueId: string, assigneeId: string): Promise<void>;
   comment(issueId: string, body: string): Promise<void>;
 }
+// The adapter MUST validate/clamp `assessment.confidence` into [0,1] at this boundary before it
+// reaches the policy gate (e.g. reject or rescale an LLM that returns 95 instead of 0.95); otherwise
+// the `confidence ≥ minConfidence` comparison silently passes on out-of-range values.
 export interface ClassifierPort { assess(c: TriageCandidate): Promise<TriageAssessment>; }
 export interface AgentRunner { run(req: AgentRunRequest): Promise<AgentRunResult>; }
 export interface ReviewerPort {              // Crosscheck adapter
   scan(): Promise<ReviewState[]>;            // `crosscheck scan --json`
   reviewState(prUrl: string): Promise<ReviewState>;
-  trigger(prUrl: string, reviewer: "claude" | "codex"): Promise<void>; // `crosscheck run`
+  // maps to `crosscheck run <prUrl>` with the reviewer selected via its reviewer flag
+  // (e.g. `--reviewer <claude|codex>`); the `reviewer` param is passed straight through to that flag.
+  trigger(prUrl: string, reviewer: "claude" | "codex"): Promise<void>;
 }
 export interface VerifierPort { verify(prUrl: string): Promise<VerificationResult>; }
 ```
 
 Two `AgentRunner` implementations: `DockerSandboxRunner` (default) and `LocalProcessRunner`
-(dev only, no isolation — explicit opt-in).
+(dev only, no isolation). `LocalProcessRunner` is guarded against accidental production use: the runner
+factory selects it only when config validation confirms `runner: "local"` **and** an explicit `isDev`
+flag is set; any other configuration falls back to `DockerSandboxRunner`.
 
 ## 6. Deployment
 
 - **Mac mini (start here):** Jazzband daemon as a `launchd` service; **colima** for headless Docker
   (no GUI). The daemon is lightweight (poll + orchestrate); each agent run is a separate container.
-  Subscription auth lives in `~/.claude` / Codex config and is mounted read-only per run.
+  Subscription auth lives on the host (`~/.claude` / Codex config); the egress proxy injects it per run
+  and it is never mounted into the container.
 - **Cloud (same artifacts):** the daemon on a small always-on VM with Docker, OR per-run containers as
   jobs (k8s Job / Fly Machine / Vercel Sandbox for the cloud-native ephemeral variant). The unit of work
   is "run image `jazzband-agent:<tag>`," so local and cloud differ only in *where* the container starts.
@@ -235,11 +260,16 @@ Two `AgentRunner` implementations: `DockerSandboxRunner` (default) and `LocalPro
 
 ## 8. Risks & open questions
 
-- **Subscription terms.** Confirm Claude Code + Codex subscription terms permit headless / containerized
-  / cloud use. If not, fall back to API keys for the agent runner (cost change, not design change).
-- **Secret-in-sandbox.** The read-only auth mount is the trust boundary; a malicious repo + a
-  compromised agent could attempt exfiltration. Mitigations: read-only mount, short-lived/repo-scoped
-  tokens, egress allowlist, no other host secrets, ephemeral container, per-run teardown.
+- **Subscription terms (go/no-go gate — resolve before implementation).** Confirm Claude Code + Codex
+  subscription terms permit headless / containerized / cloud use. This is a go/no-go gate on the whole
+  sandboxed-execution component and must be resolved before implementation begins, not during it: the
+  fallback (API keys for the agent runner) is design-compatible but carries real per-run cost.
+- **Secret-in-sandbox.** Provider auth is the trust boundary; a malicious repo + a compromised agent
+  could attempt exfiltration. A read-only mount does **not** close this — read-only blocks writes, not
+  reads, and `api.anthropic.com` is allowlisted, so a mounted credential is exfiltratable through the
+  approved channel. Mitigations: inject the auth header at the egress proxy (credential never enters the
+  container) or mint short-lived per-run credentials, repo-scoped tokens, egress allowlist, no other
+  host secrets, ephemeral container, per-run teardown.
 - **Egress allowlisting** in Docker needs a proxy sidecar — non-trivial; spec'd above, to be prototyped.
 - **Classification false-positives.** A mis-classified operational issue could draw an agent PR.
   Mitigations: conservative allowlist policy, min-confidence gate, the dry-run shadow period, and the
