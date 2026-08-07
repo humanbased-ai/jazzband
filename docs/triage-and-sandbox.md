@@ -116,10 +116,13 @@ permissions in a **throwaway container**, not on the host.
   per-run credentials** minted before the run and revoked at teardown. This is the trust boundary — see Risks.
 - **Scoped env**: a fine-grained, repo-scoped `GITHUB_TOKEN` and `LINEAR_API_KEY`, nothing else.
 - **Egress allowlist**: only `api.github.com`, `github.com`, `api.linear.app`, `api.anthropic.com`
-  (+ Codex/OpenRouter hosts as needed). Docker has no native per-host egress allowlist, so the
-  recommended approach is a sidecar forward-proxy (tinyproxy/squid allowlist) on a private bridge with
-  the agent container on `--network` pointed at it; `--network none` + proxy is the strict variant. The
-  same proxy injects the provider auth header (see Auth), so credentials never reside inside the container.
+  (+ Codex/OpenRouter hosts as needed). Docker has no native per-host egress allowlist, so the agent
+  container attaches only to an internal Docker network (`--internal`, no default route out) shared
+  with a dual-homed sidecar forward-proxy (tinyproxy/squid allowlist); the proxy's other interface is
+  the only leg with real internet egress, so it is the sole route off the agent network — not just the
+  configured default — even if malicious code ignores proxy env vars and tries Docker's NAT directly.
+  The same proxy injects the provider auth header (see Auth), so credentials never reside inside the
+  container.
 - **Resource caps**: `--cpus`, `--memory`, `--pids-limit`, a wall-clock `timeoutMs`, and an agent
   budget cap (`claude --max-budget-usd`, mirroring Crosscheck).
 - **Ephemeral**: `--rm`; the container and its clone are destroyed after the run. Logs stream to
@@ -129,7 +132,7 @@ permissions in a **throwaway container**, not on the host.
 
 ```
 docker run --rm \
-  --network jazzband-egress           # private bridge → allowlist proxy (injects provider auth) \
+  --network jazzband-egress           # internal network, no route out; dual-homed proxy is the sole egress (injects provider auth) \
   --cpus 2 --memory 4g --pids-limit 512 \
   -e GITHUB_TOKEN -e LINEAR_API_KEY   # no subscription-auth mount — the proxy injects it \
   jazzband-agent:<tag> \
@@ -157,7 +160,8 @@ export interface TriageAssessment {
   proposedApproach: string; rationale: string;
 }
 export interface TriagePolicy {
-  eligibleClasses: TriageClass[]; minConfidence: number;
+  // `operational` is excluded at the type level: it must never be auto-promoted, independent of config.
+  eligibleClasses: Exclude<TriageClass, "operational">[]; minConfidence: number;
   allowedCategories: string[]; blockedCategories: string[]; staleClaimHours: number;
 }
 export type TriageAction =
@@ -193,8 +197,9 @@ export interface VerificationResult { prUrl: string; headSha: string; passed: bo
 // is the one new type here; it extends `WorkflowPlan` and adds the live execution state below.
 export interface WorkflowRun extends WorkflowPlan {
   runId: string;
+  issueId: string; // canonical Linear issue id (UUID); `target.ticket` is the human-readable key (e.g. `IN-123`) and cannot be used to correlate here
   agentRun?: AgentRunResult; review?: ReviewState; verification?: VerificationResult;
-  startedAt: string; updatedAt: string;
+  startedAt: string; updatedAt: string; heartbeatAt: string;
 }
 ```
 
@@ -208,8 +213,11 @@ export interface TrackerPort {
    * Returns the runId of any agent run currently working this issue, or null if none.
    * "Active run" is NOT a Linear/GitHub native concept: it is tracked in the `.jazzband/runs/`
    * run-state store (see Design principles). An issue is active when a persisted `WorkflowRun`
-   * references its `issueId` in a non-terminal `phase` (anything before `ready_to_merge`); that
-   * store is the single source of truth the stale-claim guard consults.
+   * references the issue's canonical `issueId`, its `phase` is non-terminal (anything before
+   * `ready_to_merge`, excluding failure/cancellation phases), AND its `heartbeatAt` is within the
+   * run's lease window. A run whose container crashed, timed out, or was cancelled without updating
+   * its phase falls out of "active" once the lease expires, so it can no longer block a stale-claim
+   * takeover forever. That store is the single source of truth the stale-claim guard consults.
    */
   activeRunId(issueId: string): Promise<string | null>;
   promote(issueId: string, toState: string, assigneeId: string): Promise<void>;
