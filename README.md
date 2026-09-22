@@ -49,6 +49,10 @@ increments will connect Linear, GitHub, Crosscheck, coding agents, and VerifyFlo
 - SHA-bound PR annotations for review and verification results.
 - Dry-run first; irreversible actions require explicit flags.
 
+## Project policies
+
+Every workflow declares a `triage.mode`. `general` is the safe default: it can classify and label but cannot dispatch delivery. `bug-intake` is for the portal's Online Bug Reports project; it forces an adversarial verification before a low-risk fix is eligible for a PR and never controls acceptance, reputation, or rewards. `delivery` is for a project that has explicitly opted into normal ticket delivery. See [Bug intake workflow](docs/bug-intake.md).
+
 ## Relationship To Existing Tools
 
 | Tool | Owns |

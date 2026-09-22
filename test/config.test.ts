@@ -23,6 +23,16 @@ test("applies documented defaults for an empty config", () => {
   assert.equal(config.codex.command, "codex app-server");
   assert.equal(config.codex.turnTimeoutMs, 3600000);
   assert.equal(config.workspace.root, "/tmp/jazzband_workspaces");
+  assert.equal(config.triage.mode, "general");
+});
+
+test("requires an explicit, known triage mode before delivery is enabled", () => {
+  assert.equal(resolveConfig({ triage: { mode: "bug-intake" } }, OPTS).triage.mode, "bug-intake");
+  assert.equal(resolveConfig({ triage: { mode: "delivery" } }, OPTS).triage.mode, "delivery");
+  assert.throws(
+    () => resolveConfig({ triage: { mode: "anything-goes" } }, OPTS),
+    (error: unknown) => error instanceof JazzbandError && error.code === "config_validation_error",
+  );
 });
 
 test("resolves tracker.api_key from a $VAR reference", () => {

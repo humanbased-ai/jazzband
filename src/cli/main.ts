@@ -214,10 +214,13 @@ async function doTriage(
     report("triage: nothing new to classify");
     return;
   }
-  const verifier = strict
+  // Bug intake always gets the adversarial second opinion: reports are
+  // untrusted external input, and only a verified low-risk fix can enter the
+  // delivery loop.  `--strict` retains the same safeguard for delivery queues.
+  const verifier = strict || config.triage.mode === "bug-intake"
     ? new ClaudeCliVerifier({ command: config.classifier.command, model: config.classifier.model, onCost })
     : undefined;
-  const plan = await planTriage(issues, classifier, verifier);
+  const plan = await planTriage(issues, classifier, verifier, config.triage.mode);
   for (const d of plan.decisions) {
     const dup = d.duplicateOf ? ` → dup of ${d.duplicateOf}` : "";
     report(`triage ${d.issue.identifier} ${d.verdict}${dup} :: ${d.labels.join(", ")}`);
@@ -225,7 +228,7 @@ async function doTriage(
   report(`triage: cost ${costMeter.summary()}`);
   if (execute) {
     const result = await applyTriage(plan, new LinearWriteClient(config.tracker));
-    report(`triage applied: labeled ${result.labeled}`);
+    report(`triage applied: labeled ${result.labeled}; promoted ${result.promoted}`);
   } else {
     report(`triage dry-run — ${plan.decisions.length} classified. Add --execute to write labels.`);
   }
