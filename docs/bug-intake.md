@@ -12,7 +12,7 @@ triage:
 tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
-  project_slug: online-bug-reports
+  project_slug: 5cbb086a2964
 classifier:
   runner: claude-cli
 delivery:
