@@ -114,3 +114,35 @@ test("adversarial verifier demotes a fixable that fails verification", async () 
   assert.equal(byId.get("g")?.verdict, "fixable"); // survived
   assert.equal(byId.get("g")?.promote, true);
 });
+
+test("general projects are classified but cannot promote an issue into delivery", async () => {
+  const classifier = fakeClassifier({
+    r: { verdict: "fixable", fingerprint: "report-button", fixArea: "ReportButton.tsx" },
+  });
+
+  const { decisions } = await planTriage([issue("r", "IN-4000")], classifier, undefined, "general");
+
+  assert.equal(decisions[0]?.verdict, "fixable");
+  assert.equal(decisions[0]?.promote, false);
+});
+
+test("bug intake promotes only after the caller supplies a verifier", async () => {
+  const classifier = fakeClassifier({
+    r: { verdict: "fixable", fingerprint: "report-button", fixArea: "ReportButton.tsx" },
+  });
+  const verifier: Verifier = { async verify() { return { safe: true, reason: "narrow UI fix" }; } };
+
+  const { decisions } = await planTriage([issue("r", "IN-4001")], classifier, verifier, "bug-intake");
+
+  assert.equal(decisions[0]?.promote, true);
+});
+
+test("bug intake does not promote when a programmatic caller omits verification", async () => {
+  const classifier = fakeClassifier({
+    r: { verdict: "fixable", fingerprint: "report-button", fixArea: "ReportButton.tsx" },
+  });
+
+  const { decisions } = await planTriage([issue("r", "IN-4002")], classifier, undefined, "bug-intake");
+
+  assert.equal(decisions[0]?.promote, false);
+});

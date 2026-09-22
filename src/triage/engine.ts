@@ -1,6 +1,7 @@
 import type { Issue } from "../core/types.js";
 import { dedup } from "./dedup.js";
 import type { Classification, Classifier, TriageDecision, TriagePlan, Verdict, Verifier } from "./types.js";
+import type { TriageMode } from "../core/types.js";
 
 const VERDICT_LABEL: Record<Verdict, string> = {
   fixable: "triage:fixable",
@@ -29,6 +30,7 @@ export async function planTriage(
   issues: Issue[],
   classifier: Classifier,
   verifier?: Verifier,
+  mode: TriageMode = "delivery",
 ): Promise<TriagePlan> {
   const classifications = await Promise.all(issues.map((issue) => classifier.classify(issue)));
   const byId = new Map(classifications.map((c) => [c.issueId, c]));
@@ -67,7 +69,16 @@ export async function planTriage(
       verdict: classification.verdict,
       labels: labelsFor(classification),
       duplicateOf: null,
-      promote: classification.verdict === "fixable",
+      // A generic project can be classified, but it must name a delivery
+      // workflow before Jazzband gives an agent authority to open a PR.
+      // Bug intake has the same narrow promotion but retains the reporter's
+      // acceptance and reward decision outside Jazzband.
+      promote:
+        classification.verdict === "fixable" &&
+        mode !== "general" &&
+        // A bug report is untrusted external intake.  Even programmatic callers
+        // cannot accidentally bypass the second opinion that the CLI supplies.
+        (mode !== "bug-intake" || verifier !== undefined),
       reason: classification.reason,
     };
   });

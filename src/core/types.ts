@@ -118,6 +118,17 @@ export interface ClassifierConfig {
   authToken: string | null;
 }
 
+/**
+ * A project must opt into delivery.  Bug intake is deliberately separate from
+ * a normal delivery queue: it may classify and deduplicate reports, but it
+ * must never decide whether a reporter is rewarded.
+ */
+export type TriageMode = "general" | "bug-intake" | "delivery";
+
+export interface TriageConfig {
+  mode: TriageMode;
+}
+
 /** How jazzband opens the PR after the agent finishes (deterministic git wrapper). */
 export interface DeliveryConfig {
   /** GitHub "owner/repo" to open the PR against; null disables auto-PR. */
@@ -147,6 +158,7 @@ export interface ServiceConfig {
   agent: AgentConfig;
   codex: CodexConfig;
   classifier: ClassifierConfig;
+  triage: TriageConfig;
   delivery: DeliveryConfig;
   /** USD spend cap per run (0 = no cap); enforced against the Claude CLI's reported cost. */
   budgetUsd: number;

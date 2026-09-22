@@ -9,6 +9,7 @@ import type {
   RawConfig,
   ServiceConfig,
   TrackerConfig,
+  TriageConfig,
 } from "./types.js";
 
 type Env = Record<string, string | undefined>;
@@ -188,6 +189,14 @@ function resolveClassifier(raw: RawConfig, env: Env): ServiceConfig["classifier"
   };
 }
 
+function resolveTriage(raw: RawConfig): TriageConfig {
+  const mode = optString(raw.mode, "triage.mode") ?? "general";
+  if (mode !== "general" && mode !== "bug-intake" && mode !== "delivery") {
+    fail('triage.mode must be "general", "bug-intake", or "delivery"');
+  }
+  return { mode };
+}
+
 /**
  * Resolve a raw front-matter config map into the typed ServiceConfig (SPEC §6.1):
  * apply defaults, resolve `$VAR` indirection only where present, then coerce and validate.
@@ -203,6 +212,7 @@ export function resolveConfig(rawConfig: RawConfig, options: ResolveConfigOption
   const agentRaw = asObject(rawConfig.agent, "agent");
   const codexRaw = asObject(rawConfig.codex, "codex");
   const classifierRaw = asObject(rawConfig.classifier, "classifier");
+  const triageRaw = asObject(rawConfig.triage, "triage");
 
   const polling: PollingConfig = {
     intervalMs: optInt(pollingRaw.interval_ms, "polling.interval_ms", 30000),
@@ -228,6 +238,7 @@ export function resolveConfig(rawConfig: RawConfig, options: ResolveConfigOption
     agent: resolveAgent(agentRaw),
     codex: resolveCodex(codexRaw),
     classifier: resolveClassifier(classifierRaw, env),
+    triage: resolveTriage(triageRaw),
     delivery: resolveDelivery(asObject(rawConfig.delivery, "delivery")),
     budgetUsd: typeof rawConfig.budget_usd === "number" && rawConfig.budget_usd > 0 ? rawConfig.budget_usd : 0,
   };
